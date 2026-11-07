@@ -100,11 +100,23 @@ def write_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
-def options() -> tuple[str, str, str]:
+def options() -> tuple[str, str, Callable[[], str] | str]:
+    """The site, the persona to name (empty with an OAuth login: the site takes the login's own) and the bearer: the
+    old key when all three options are set, else the login `/apersona:login` left (fetched again for each request,
+    since an access token lasts an hour and a big folder takes longer)."""
     site, persona, key = (os.environ.get("CLAUDE_PLUGIN_OPTION_" + k, "") for k in ("SITE", "PERSONA", "KEY"))
-    if not (site and persona and key):
-        raise RefusedError("外掛沒設定 site、persona 或 key")
-    return site.rstrip("/"), persona, key
+    if site and persona and key:
+        return site.rstrip("/"), persona, key
+    import apersona_login  # beside this file
+
+    where = (site or apersona_login.DEFAULT_SITE).rstrip("/")
+    if not apersona_login.logged_in(where):
+        raise RefusedError("還沒登入：先執行 /apersona:login（或在外掛設定填 site、persona、key 三項）")
+    return where, "", partial(apersona_login.bearer, where)
+
+
+def who(persona: str) -> dict[str, str]:
+    return {"personaId": persona} if persona else {}
 
 
 def _call(request: urllib.request.Request) -> dict[str, object]:
@@ -117,16 +129,23 @@ def _call(request: urllib.request.Request) -> dict[str, object]:
     return cast("dict[str, object]", answer) if isinstance(answer, dict) else {}
 
 
-def _headers(key: str, **more: str) -> dict[str, str]:
+def _headers(key: Callable[[], str] | str, **more: str) -> dict[str, str]:
+    if callable(key):
+        import apersona_login
+
+        try:
+            key = key()
+        except apersona_login.LoginError as e:
+            raise RefusedError(str(e)) from None
     return {"Authorization": "Bearer " + key, "Accept": "application/json", **more}
 
 
-def get(site: str, path: str, key: str, query: dict[str, str]) -> dict[str, object]:
+def get(site: str, path: str, key: Callable[[], str] | str, query: dict[str, str]) -> dict[str, object]:
     url = site + path + "?" + urllib.parse.urlencode(query)
     return _call(urllib.request.Request(url, headers=_headers(key), method="GET"))
 
 
-def post_json(site: str, path: str, key: str, body: dict[str, object]) -> dict[str, object]:
+def post_json(site: str, path: str, key: Callable[[], str] | str, body: dict[str, object]) -> dict[str, object]:
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     headers = _headers(key, **{"Content-Type": "application/json"})
     return _call(urllib.request.Request(site + path, data=data, headers=headers, method="POST"))
@@ -149,8 +168,10 @@ def multipart(fields: list[tuple[str, str]], files: list[tuple[str, bytes]]) -> 
     return b"".join(out), f"multipart/form-data; boundary={boundary}"
 
 
-def post_files(site: str, key: str, persona: str, files: list[tuple[str, bytes]], me: list[str]) -> dict[str, object]:
-    body, kind = multipart([("personaId", persona), *(("me", m) for m in me)], files)
+def post_files(
+    site: str, key: Callable[[], str] | str, persona: str, files: list[tuple[str, bytes]], me: list[str]
+) -> dict[str, object]:
+    body, kind = multipart([*who(persona).items(), *(("me", m) for m in me)], files)
     request = urllib.request.Request(
         site + FILES_PATH, data=body, headers=_headers(key, **{"Content-Type": kind}), method="POST"
     )
@@ -193,11 +214,14 @@ def stop_for_good(f: Failure) -> str:
     "Why a 永久 refusal will not get better by running it again, and what to do instead, in the owner's words."
     said = f"（網站說：{f.said}）" if f.said else ""
     if f.status == 401:
-        return "停下，不用再試：安裝金鑰失效，到網站設定頁重發一把，再用新的金鑰重新安裝外掛" + said
+        return "停下，不用再試：登入失效了；執行 /apersona:login 重新登入（舊金鑰就到網站設定頁重發一把）" + said
     if f.status == 403:
         return "停下，不用再試：網站不認這個同意（上傳的內容跟同意的那一句對不上）；重跑 ask 再問本人" + said
     if f.status == 404:
-        return "停下，不用再試：網站找不到這個人格或這次上傳，或這把金鑰開不了它；檢查外掛設定的 persona 與金鑰" + said
+        return (
+            "停下，不用再試：網站找不到這個人格或這次上傳，或這個登入開不了它；"
+            "重新執行 /apersona:login（舊金鑰就檢查 persona 與金鑰）" + said
+        )
     if f.status == 409:
         return "停下：" + (f.said or "網站說這次上傳現在不能這樣做")
     if f.status == 413:
@@ -228,10 +252,10 @@ def patiently(call: Callable[[], dict[str, object]], what: str) -> dict[str, obj
             attempt += 1
 
 
-def codes_on(site: str, persona: str, key: str) -> bool:
+def codes_on(site: str, persona: str, key: Callable[[], str] | str) -> bool:
     "上傳前換代號 as the site says now; on when it cannot be asked (寧可多遮), and he is told which."
     try:
-        found = get(site, SETTINGS_PATH, key, {"personaId": persona}).get("aliasCodes")
+        found = get(site, SETTINGS_PATH, key, who(persona)).get("aliasCodes")
     except OSError:
         found = None
     if not isinstance(found, bool):
@@ -413,7 +437,7 @@ def consent(work: Path, yes: bool) -> int:
         for a in answers:
             if not a.get("consentSha256"):
                 continue
-            body = {"personaId": persona, "jobId": a["jobId"]}
+            body = {**who(persona), "jobId": a["jobId"]}
             said_last = str(patiently(partial(post_json, site, FILES_DECLINE_PATH, key, body), "不同意").get("message"))
         record["consent"] = False
         write_json(work / "uploads.json", record)
@@ -423,7 +447,7 @@ def consent(work: Path, yes: bool) -> int:
     for a in answers:
         if not a.get("consentSha256"):
             continue
-        body: dict[str, object] = {"personaId": persona, "jobId": a["jobId"], "consentSha256": a["consentSha256"]}
+        body: dict[str, object] = {**who(persona), "jobId": a["jobId"], "consentSha256": a["consentSha256"]}
         reply = patiently(partial(post_json, site, FILES_CONSENT_PATH, key, body), "同意")
         print(str(reply.get("message") or ""))
         if reply.get("queued"):
@@ -440,7 +464,7 @@ def status(work: Path) -> int:
     "`status`: where each batch's read stands."
     site, persona, key = options()
     for a in cast("list[dict[str, object]]", _uploads(work)["answers"]):
-        query = {"personaId": persona, "job": str(a["jobId"])}
+        query = {**who(persona), "job": str(a["jobId"])}
         now = patiently(partial(get, site, FILES_PATH, key, query), "查進度")
         if not now.get("agreed"):
             print(f"{a['jobId']}：還沒同意")
@@ -455,9 +479,9 @@ def cancel(work: Path) -> int:
     record = _uploads(work)
     said_last = ""
     for job in cast("list[str]", record.get("agreed") or []):
-        query = {"personaId": persona, "job": job}
+        query = {**who(persona), "job": job}
         prints: object = patiently(partial(get, site, SEGMENTS_PATH, key, query), "取消").get("fingerprints") or []
-        body: dict[str, object] = {"personaId": persona, "jobId": job, "fingerprints": prints}
+        body: dict[str, object] = {**who(persona), "jobId": job, "fingerprints": prints}
         said_last = str(patiently(partial(post_json, site, CANCEL_PATH, key, body), "取消").get("message") or "")
     record["consent"] = False
     record["agreed"] = []

@@ -162,7 +162,7 @@ def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: f
         content = redact(content)
         identifier = str(row["uuid"])
         payload = {
-            "personaId": persona,
+            **({"personaId": persona} if persona else {}),
             "turnId": session + ":" + identifier,
             "messageId": identifier,
             "text": content,
@@ -180,12 +180,27 @@ def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: f
         ack.write_text(json.dumps(sorted(sent)), encoding="utf-8")
 
 
+def login_bearer(site: str, left_s: float) -> tuple[str, str, str]:
+    """The site and access token of the device login (`apersona_login.py`), no persona: the site takes the one the
+    login stands for. The hook never logs in; with none it is `not_configured`, as with nothing set at all."""
+    try:
+        import apersona_login  # beside this file; the Codex copy of the hook has no such neighbour
+    except ImportError:
+        raise MissError("not_configured") from None
+    where = (site or apersona_login.DEFAULT_SITE).rstrip("/")
+    try:
+        return where, "", apersona_login.bearer(where, max(0.1, left_s))
+    except apersona_login.LoginError as e:
+        raise MissError("not_configured" if e.kind == "not_logged_in" else e.kind) from None
+
+
 def now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
 def opening_request(site: str, persona: str, key: str) -> urllib.request.Request:
-    url = site.rstrip("/") + "/api/memory/opening?" + urllib.parse.urlencode({"personaId": persona})
+    query = urllib.parse.urlencode({"personaId": persona} if persona else {})
+    url = site.rstrip("/") + "/api/memory/opening" + ("?" + query if query else "")
     return urllib.request.Request(url, headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
 
 
@@ -205,7 +220,9 @@ def typed_turn(hook_input: str) -> tuple[str, str]:
 def turn_request(
     site: str, persona: str, key: str, session: str, prompt: str, received: list[str] | None
 ) -> urllib.request.Request:
-    fields: dict[str, object] = {"personaId": persona, "sessionId": session, "prompt": prompt}
+    fields: dict[str, object] = {"sessionId": session, "prompt": prompt}
+    if persona:  # an OAuth login has none: the site takes the one the login stands for
+        fields["personaId"] = persona
     if received is not None:
         fields["received"] = received
     body = json.dumps(fields).encode("utf-8")
@@ -632,8 +649,8 @@ def main(argv: list[str] | None = None) -> int:
     site, persona, key = (os.environ.get("CLAUDE_PLUGIN_OPTION_" + k, "") for k in ("SITE", "PERSONA", "KEY"))
     session = ""
     try:
-        if not (site and persona and key):
-            raise MissError("not_configured")
+        if not (site and persona and key):  # no old key set: the login `/apersona:login` left, if there is one
+            site, persona, key = login_bearer(site, BUDGET_S - (now_ms() - started_ms) / 1000)
         if args.kind == "stop":
             try:
                 capture_stop(
