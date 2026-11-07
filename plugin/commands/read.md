@@ -1,0 +1,17 @@
+---
+description: 開讀前先問：把資料夾的檔送上網站切段，列出能讀的與讀不了的，本人說好才讀
+---
+
+Read the owner's material only with his explicit yes. The folder is `$ARGUMENTS` (ask him if empty). Only the system's `python3` is needed; nothing else is installed.
+
+1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/apersona_intake.py" --work "<folder>/.apersona-intake" ask "<folder>"`. If the folder holds Slack or LINE exports, first ask him which name or account id is his in them and add `--me "<that name>"` (once per name); without it those chats are not read. ChatGPT and Claude `conversations.json` need no `--me`.
+   - It first asks the website for his account's 「上傳前換代號」 (off by default) and prints which. Off: his files go up as written; names, phone numbers and emails are not swapped. On (or when the site could not be asked, then treated as on): before running `ask`, list the person names that appear in the folder's files (people other than the owner, and the owner's own name if he wants it hidden; not the name he uses in chat exports), one per line, into `<folder>/.apersona-intake/names.txt`, doing this on this machine only, and add `--names-file "<folder>/.apersona-intake/names.txt"`. Names and numbers then become codes on this machine before anything is sent, and a .docx or .pdf is not sent (its text cannot be masked here; he can save it as .txt or .md). Secrets (keys, passwords) are hidden on this machine either way.
+   - Files left out by `.gitignore`／`.apersonaignore` (or always: `.git`, `node_modules`, `.env*`) are not sent, and the output says how many. Each file goes up under a random name; its path stays on this machine.
+   - The site cuts the files and says what it found; it reads nothing and spends nothing at this step. The files are sent up to be prepared and are read only after he agrees; if he says no, the site never reads them (also after 7 days with no answer).
+2. Show him the printed lines exactly as printed: how many files came, how many parts can be read, how many cannot and why, each file with its reason, and the one sentence to agree to (「用你的額度讀這 N 份」, or 「用免費額度讀這 N 份」 on the free extraction). Then ask him to answer 好 or 不要. Do not answer for him and do not continue without his answer.
+3. Only if he answers yes in his own words: `python3 "${CLAUDE_PLUGIN_ROOT}/bin/apersona_intake.py" --work "<folder>/.apersona-intake" consent yes`. Tell him the printed message as it is: the read is queued (`status` shows how far it got), or why it is not (for example 「你超出免費額度了，我們已保存你前面的進度」 with what he can do next). Never say an amount.
+4. If he says no: `... consent no`, and stop. Nothing is read, now or later; tell him the printed message as it is. If he does not answer, stop; after 7 days the site takes it as a no and never reads it.
+5. If he cancels at any time: `... cancel`. Tell him the printed message as it is: what went up stays, what was not read yet is not read; a file he never wants read goes through the website's 「刪除這份來源」 or `.apersonaignore`.
+6. On exit code 5 (暫時: no connection, the site busy; retries used up) wait a while and run the same command again. On exit code 3 the reason is permanent: do not run it again; tell him the message exactly as printed (it says what to do, e.g. 401 means the install key is no longer valid and he must issue a new one on the website's settings page).
+
+When codes were on and you later answer him, the codes (K7 and the like) are in `<folder>/.apersona-intake/aliases.json`; put the real names back yourself, on this machine.

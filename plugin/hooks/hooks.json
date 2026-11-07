@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" stop", "timeout": 5}]}],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" opening",
+            "timeout": 5,
+            "statusMessage": "正在拿開場包…"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" turn",
+            "timeout": 5,
+            "statusMessage": "正在找相關的記憶…"
+          }
+        ]
+      }
+    ]
+  }
+}

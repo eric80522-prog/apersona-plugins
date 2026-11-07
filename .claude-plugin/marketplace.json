@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "apersona",
+  "description": "Apersona：把本人的經驗與取捨用在他正在做的真實任務上。",
+  "owner": { "name": "eric80522-prog" },
+  "plugins": [
+    {
+      "name": "apersona",
+      "source": "./plugin",
+      "description": "開場帶本人規矩、記憶目錄與判讀摘要；決策點用 MCP 查預註冊的預決策，事後回報結果對照。"
+    }
+  ]
+}

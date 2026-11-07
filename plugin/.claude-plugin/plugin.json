@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "apersona",
+  "displayName": "Apersona",
+  "description": "本人的規矩、記憶目錄與判讀摘要在開場交給你的 agent；決策點用 MCP 查預註冊的預決策，事後回報結果對照。",
+  "author": {
+    "name": "eric80522-prog"
+  },
+  "keywords": [
+    "apersona",
+    "persona",
+    "mcp",
+    "pre_decision"
+  ],
+  "userConfig": {
+    "site": {
+      "type": "string",
+      "title": "伺服器網址（選填）",
+      "description": "只有開場包與每輪記憶要用，例如 https://www.apersonaai.com。不填就只有 MCP 連接器（OAuth 登入）。",
+      "required": false
+    },
+    "persona": {
+      "type": "string",
+      "title": "人格識別碼（選填）",
+      "description": "開場包與每輪記憶要用；網站上人格頁看得到。",
+      "required": false
+    },
+    "key": {
+      "type": "string",
+      "title": "連線金鑰（選填）",
+      "description": "開場包與每輪記憶目前要用；不填時 MCP 仍走 OAuth 登入，開場包與每輪記憶不會啟動。",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "mcpServers": {
+    "apersona": {
+      "type": "http",
+      "url": "https://www.apersonaai.com/mcp"
+    }
+  }
+}
