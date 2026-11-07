@@ -1,10 +1,16 @@
 ---
-description: 登入 Apersona：開場包與每輪記憶、送原始檔都用這個登入，不用貼金鑰
+description: 登入 Apersona：開場包與每輪記憶、送原始檔都用這個登入
 ---
 
 Log the owner in once on this machine. Only the system's `python3` is needed; nothing else is installed.
 
-1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/apersona_login.py" login` (give the Bash tool a timeout of at least 120 seconds: it waits up to 90 seconds for him). It prints a web address and a short code. Show him both exactly as printed and tell him: open the address in the browser, log in, type the code, press 允許.
+1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_login.py" login` (give the Bash tool a timeout of at least 120 seconds: it waits up to 90 seconds for him). It prints a web address and a short code. Show him both exactly as printed and tell him: open the address in the browser, log in, type the code, press 允許.
 2. The command ends by itself once he has pressed 允許 (it prints 「登入好了」) or after 90 seconds. If it printed 「還在等你按允許」, wait for him to say he pressed it, then run the same command again; it goes on with the same code (a code lives ten minutes). If the code ran out or he pressed 拒絕, run it again for a new one.
-3. `python3 "${CLAUDE_PLUGIN_ROOT}/bin/apersona_login.py" status` says whether this machine is logged in. Never print or read the credentials file (`~/.apersona/plugin-credentials.json`) back to him.
-4. Tell him in one line: 登入好了；下一個對話起，開場會帶本人規矩、記憶目錄與判讀摘要，每打一句有相關記憶時會提示可叫 recall（`/apersona:off` 可關）。網站上「登出這台」按下去，這台就要重新 `/apersona:login`。
+3. `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_login.py" status` says whether this machine is logged in. Never print or read the credentials file (`~/.apersona/plugin-credentials.json`) back to him.
+4. When it is done, tell him, in these words:
+   - 登入好了。下一個對話起，開場會帶本人規矩、記憶目錄與判讀摘要。
+   - 你每打一句都會送到 apersonaai.com 比對相關記憶（先在本機遮秘密）；有相關的只會提示可叫 recall。不想送就 `/apersona:off`。
+   - 收錄（把你親手打的字收進素材）預設關。要開，請你本人在自己的終端機執行下面這一行，看過同意書後親手打「我同意」（我不能代你開）：
+     `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_hook.py" --consent yes`
+   - 要登出這台打 `/apersona:logout`；網站上按「登出這台」也會讓這台要重新 `/apersona:login`。
+   Never run the `--consent yes` line yourself.

@@ -2,7 +2,8 @@
 
 Three kinds, all decided on this machine from names only, before any file is opened:
 
-- always: a folder called `.git` or `node_modules` and a file whose name starts with `.env`, at any depth. No rule
+- always: a shortcut (symlink), file or folder, which is never followed and counted as left out when its name is of
+  a kind read; a folder called `.git` or `node_modules` and a file whose name starts with `.env`, at any depth. No rule
   file can bring them back.
 - `.gitignore` and `.apersonaignore` in the folder and in every folder below it, read by the `.gitignore` syntax
   (the part of it that matters for notes: `#` comments, `!` to bring a path back, a trailing `/` for folders only, a
@@ -187,6 +188,10 @@ class Walk:
             if entry.name.startswith("."):
                 continue  # hidden: skipped as it always was, not counted
             below = (*parts, entry.name)
+            if entry.is_symlink():  # a shortcut is never followed: it may point anywhere on the machine
+                if Path(entry.name).suffix.lower() in self.suffixes:
+                    self.left_out += 1
+                continue
             is_dir = entry.is_dir(follow_symlinks=False)
             if is_dir:
                 if entry.name in ALWAYS_DIRS or is_ignored(below, True, levels):
@@ -194,7 +199,7 @@ class Walk:
                 else:
                     self._visit(Path(entry.path), below, [*levels, (below, _load(Path(entry.path)))])
                 continue
-            if Path(entry.name).suffix.lower() not in self.suffixes or not (entry.is_file() or entry.is_symlink()):
+            if Path(entry.name).suffix.lower() not in self.suffixes or not entry.is_file(follow_symlinks=False):
                 continue
             if always_excluded(below) or is_ignored(below, False, levels):
                 self.left_out += 1

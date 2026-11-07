@@ -1,13 +1,20 @@
-"""Put the three Apersona hooks (開場包, 每輪記憶, 收錄) into the Codex CLI, or take them out again.
+"""Put the three Apersona hooks (開場包, 每輪記憶, 收錄) into the Codex CLI, or take them out again. For Codex only;
+Claude Code uses the plugin itself.
 
-    python apersona_codex.py install --site URL --persona ID --key-file PATH
+    python apersona_codex.py install [--site URL]
     python apersona_codex.py uninstall | on | off | status | consent yes|no
 
-Standard library only, on python 3.9 and up. The hook script is copied to `~/.apersona/codex/bin/` (the commands in
-Codex's hooks.json carry absolute paths, because Codex gives a hook no plugin variables), the site, persona and the
-path of the key file go to `~/.apersona/codex/config.json` (never the key itself), and our three handlers are merged
-into `<CODEX_HOME or ~/.codex>/hooks.json` without touching anyone else's. `config.toml` is never written: the MCP
-line is only printed.
+Standard library only, on python 3.9 and up. The hook script and what it imports are copied to
+`~/.apersona/codex/bin/` (the commands in Codex's hooks.json carry absolute paths, because Codex gives a hook no plugin
+variables), the site goes to `~/.apersona/codex/config.json`, and our three handlers are merged into
+`<CODEX_HOME or ~/.codex>/hooks.json` without touching anyone else's. The hooks reach the site with the same device
+login as the Claude Code plugin (`~/.apersona/plugin-credentials.json`): when there is none, install runs it (an
+address and a short code, then it waits for him to press 允許). No key is read or written anywhere.
+
+`config.toml` is never written: the MCP lines are only printed. Codex reaches a Streamable HTTP MCP server with OAuth
+itself (`codex mcp add <name> --url <url>`, then `codex mcp login <name>`, registering by DCR; Codex's MCP page,
+read 2026-11-07), so the fixed address `<site>/mcp` needs no token from us at all, and nothing long-lived is written
+into Codex's settings.
 """
 
 from __future__ import annotations
@@ -17,20 +24,24 @@ import importlib.util
 import json
 import os
 import shlex
-import subprocess
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import cast
-from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import apersona_login  # noqa: E402
+from apersona_safe import checked_site, private_dir  # noqa: E402
 
 HOOK_NAME = "apersona_hook.py"
+#: what the hook imports from beside itself, copied with it
+HOOK_SIBLINGS = ("apersona_mask.py", "apersona_safe.py", "apersona_login.py")
 BACKUP_TAG = ".apersona-backup-"
 # (Codex event, hook kind, timeout in seconds, additionalContextLimit in tokens). Codex cuts a hook's additionalContext
 # past about 2,500 tokens by default into a head-and-tail preview (https://developers.openai.com/codex/hooks, read
-# 2026-11-07); the hook itself already cuts at MAX_TEXT = 10,000 characters, from the end. A Chinese character can take
+# 2026-11-07); the hook itself already cuts at MAX_TEXT = 8,000 characters, from the end. A Chinese character can take
 # more than one token, so the limit is two tokens a character: Codex never cuts again what the hook let through, and
 # never out of the middle.
 CONTEXT_LIMIT = 20_000
@@ -175,22 +186,30 @@ def write_replacing(path: Path, data: bytes, *, backup: bool = False, private: b
     return made
 
 
-def checked_inputs(site: str, persona: str, key_file: str) -> tuple[str, str, Path]:
-    parsed = urlparse(site.strip())
-    if parsed.scheme not in ("http", "https") or not parsed.netloc or any(c.isspace() for c in site.strip()):
-        raise InstallError("--site 要是 http:// 或 https:// 開頭的網址")
-    if not persona.strip():
-        raise InstallError("--persona 不能是空的")
-    path = Path(key_file).expanduser().resolve()
+def checked_site_of(site: str) -> str:
     try:
-        has_key = bool(path.read_text(encoding="utf-8").strip())
-    except OSError:  # separate clauses: the formatter would drop the parentheses python 3.9 needs
-        raise InstallError(f"讀不到金鑰檔 {path}") from None
-    except ValueError:
-        raise InstallError(f"讀不到金鑰檔 {path}") from None
-    if not has_key:
-        raise InstallError(f"金鑰檔 {path} 是空的")
-    return site.strip().rstrip("/"), persona.strip(), path
+        return checked_site(site or apersona_login.DEFAULT_SITE)
+    except ValueError as e:
+        raise InstallError("--site：" + str(e)) from None
+
+
+def ensure_login(site: str) -> bool:
+    "The device login for `site`, run now when there is none; True when this machine is logged in."
+    if apersona_login.logged_in(site):
+        print(f"已登入 {site}（與 Claude Code 外掛共用同一份登入）")
+        return True
+    print(f"這台還沒登入 {site}；開場包、每輪記憶與收錄都要先登入：")
+    try:
+        done = apersona_login.login(site, lambda line: print(line, flush=True))
+    except apersona_login.LoginError as e:
+        print(str(e))
+        done = False
+    if done:
+        print(f"登入好了（{site}）")
+    else:
+        me = f"{quote(sys.executable)} {quote(str(Path(__file__).with_name('apersona_login.py').resolve()))}"
+        print(f"還沒登入完；按完允許後執行 {me} login，hook 登入前什麼都不做")
+    return done
 
 
 def command_problem(python: str, script: str) -> str | None:
@@ -202,8 +221,8 @@ def command_problem(python: str, script: str) -> str | None:
     return None
 
 
-def install(site: str, persona: str, key_file: str) -> int:
-    site, persona, key_path = checked_inputs(site, persona, key_file)
+def install(site: str) -> int:
+    site = checked_site_of(site)
     hooks_path, data = codex_home() / "hooks.json", data_home()
     config_path, script = data / "config.json", data / "bin" / HOOK_NAME
     if config_path.is_symlink():
@@ -214,10 +233,12 @@ def install(site: str, persona: str, key_file: str) -> int:
     current = read_hooks(hooks_path)
     text = render_hooks(current, hook_groups(sys.executable, str(script)))
     source = Path(__file__).with_name(HOOK_NAME)
-    config = json.dumps({"site": site, "persona": persona, "key_file": str(key_path)}, indent=2) + "\n"
+    config = json.dumps({"site": site}, indent=2) + "\n"
     try:
-        data.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_dir(data / "bin")
         write_replacing(script, source.read_bytes())
+        for sibling in HOOK_SIBLINGS:
+            write_replacing(script.with_name(sibling), source.with_name(sibling).read_bytes())
         write_replacing(config_path, config.encode("utf-8"), private=True)
         backup = None
         if not (hooks_path.exists() and hooks_path.read_text(encoding="utf-8-sig") == text):
@@ -225,13 +246,15 @@ def install(site: str, persona: str, key_file: str) -> int:
     except OSError as e:
         raise InstallError(f"寫入失敗（{type(e).__name__}：{e}）；hooks 沒有裝好") from None
     print(f"已裝好：{hooks_path}" + (f"（原檔備份在 {backup}）" if backup else ""))
-    print(f"設定檔：{config_path}（只記金鑰檔的路徑，金鑰本身不在裡面）")
+    print(f"設定檔：{config_path}（只記網站網址；不放任何金鑰）")
+    ensure_login(site)
     ask_consent(script)
     print()
     print("下一步：")
     print("  1. 打開 Codex，執行 /hooks，信任這三個 apersona hook（Codex 要你信任一次才會跑）。")
-    print("  2. 把 MCP 連線加進 Codex（金鑰從檔案讀進環境變數 APERSONA_KEY）：")
-    print(f"     codex mcp add apersona --url {site}/mcp/p/{persona} --bearer-token-env-var APERSONA_KEY")
+    print("  2. 把 MCP 加進 Codex（固定網址，Codex 自己走 OAuth 登入，不用金鑰）：")
+    print(f"     codex mcp add apersona --url {site}/mcp")
+    print("     codex mcp login apersona")
     me = f"{quote(sys.executable)} {quote(str(Path(__file__).resolve()))}"
     print(f"關掉／再打開：{me} off ／ on；看狀態：{me} status；拆掉：{me} uninstall")
     return 0
@@ -249,11 +272,19 @@ def uninstall() -> int:
             backup = write_replacing(hooks_path, render_hooks(current, []).encode("utf-8"), backup=True)
             print(f"已從 {hooks_path} 拿掉 apersona 的 hook（原檔備份在 {backup}）")
         config_path.unlink(missing_ok=True)
-        (data / "bin" / HOOK_NAME).unlink(missing_ok=True)
+        for name in (HOOK_NAME, *HOOK_SIBLINGS):
+            (data / "bin" / name).unlink(missing_ok=True)
     except OSError as e:
         raise InstallError(f"刪除失敗（{type(e).__name__}：{e}）") from None
     print("已刪掉設定檔與複製的 hook 腳本；記錄、同意檔與暫存留在 " + str(data))
     print("MCP 連線要自己拿掉：codex mcp remove apersona")
+    print(
+        "登入共用 Claude Code 外掛的那一份；要登出這台："
+        + quote(sys.executable)
+        + " "
+        + quote(str(Path(__file__).with_name("apersona_login.py").resolve()))
+        + " logout"
+    )
     return 0
 
 
@@ -272,15 +303,28 @@ def status() -> int:
     hook = load_hook()
     installed = (data / "config.json").exists() and (data / "bin" / HOOK_NAME).exists()
     print("已安裝" if installed else "沒有安裝")
+    try:
+        site = str(json.loads((data / "config.json").read_text(encoding="utf-8")).get("site") or "")
+    except OSError:  # one exception per clause: the formatter would drop the parentheses python 3.9 needs
+        site = ""
+    except ValueError:
+        site = ""
+    except AttributeError:
+        site = ""
+    if site:
+        print("登入：" + ("已登入 " + site if apersona_login.logged_in(site) else "還沒登入 " + site))
     print("開場包與每輪記憶：" + ("關" if hook.switched_off(data) else "開"))
     print("收錄：" + ("開（Codex 版同意）" if hook.consent("codex") else "關"))
     return 0
 
 
 def record_consent(script: Path, answer: str) -> bool:
-    "Have the copied hook write the consent file; True when it says it did."
-    done = subprocess.run([sys.executable, str(script), "--client", "codex", "--consent", answer], check=False)
-    return done.returncode == 0
+    "Have the copied hook write the consent file (its text's hash is the one recorded); True when it did."
+    try:
+        load_hook(script).write_consent("codex", answer == "yes")
+    except OSError:
+        return False
+    return True
 
 
 def ask_consent(script: Path) -> bool:
@@ -324,19 +368,17 @@ def set_consent(answer: str) -> int:
         raise InstallError("還沒安裝；先執行 install")
     if answer == "yes":
         return 0 if ask_consent(script) else 1
-    done = subprocess.run([sys.executable, str(script), "--client", "codex", "--consent", "no"], check=False)
-    if done.returncode == 0:
-        print("收錄已關閉。")
-    return done.returncode
+    if not record_consent(script, "no"):
+        return 1
+    print("收錄已關閉。")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_codex.py", description="把 Apersona 的 hook 裝進 Codex")
     commands = parser.add_subparsers(dest="command", required=True)
-    add = commands.add_parser("install", help="裝三個 hook")
-    add.add_argument("--site", required=True)
-    add.add_argument("--persona", required=True)
-    add.add_argument("--key-file", required=True)
+    add = commands.add_parser("install", help="裝三個 hook（沒登入就先跑裝置碼登入）")
+    add.add_argument("--site", default="", help="只有連自己架的網站才填；預設 https://www.apersonaai.com")
     for name in ("uninstall", "on", "off", "status"):
         commands.add_parser(name)
     commands.add_parser("consent").add_argument("answer", choices=("yes", "no"))
@@ -346,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         reconfigure(encoding="utf-8")
     try:
         if args.command == "install":
-            return install(args.site, args.persona, args.key_file)
+            return install(args.site)
         if args.command == "uninstall":
             return uninstall()
         if args.command == "consent":

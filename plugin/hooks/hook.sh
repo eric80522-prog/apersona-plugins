@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # `hook.sh opening` at SessionStart (開場包), `hook.sh turn` at UserPromptSubmit (每輪記憶, the hook's JSON on stdin).
+# `hook.sh stop` at Stop (收錄, off until he consents at his own terminal).
 # Never block a prompt, including when logging or the interpreter fails.
 exec 2>/dev/null
 
@@ -9,7 +10,7 @@ case "${1:-opening}" in
   stop) kind=stop ;;
   *) kind=opening; exec </dev/null ;;
 esac
-# On from install (Eric 11-04); only an explicit /apersona:off turns it off.
+# On from install; only an explicit /apersona:off turns it off.
 if [ -z "$plugin_data" ] || grep -Eq '"on"[[:space:]]*:[[:space:]]*false' "$plugin_data/apersona.json"; then
   exit 0
 fi
@@ -48,7 +49,7 @@ if [ -z "$py" ]; then
   exit 0
 fi
 
-client="$(cd "$(dirname "$0")/.." && pwd)/bin/apersona_hook.py"
+client="$(cd "$(dirname "$0")/.." && pwd)/scripts/apersona_hook.py"
 if command -v timeout >/dev/null 2>&1; then
   output="$(timeout 3 "$py" "$client" --kind "$kind" --event-id "$event_id" --started-ms "$started_ms")"
   status=$?

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# 絕不提交：憑證、金鑰、環境檔、本機資料
+.env
+.env.*
+*.pem
+*.key
+plugin-credentials.json
+*.credentials.json
+.apersona/
+apersona.json
+events.jsonl
+capture-consent.json
+spool/
+intake/
+
+# 編輯器與系統
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.bak

@@ -1,23 +1,22 @@
 """開場包 at SessionStart (`--kind opening`) and 每輪記憶 at UserPromptSubmit (`--kind turn`, the hook's JSON with
 `session_id` and `prompt` on stdin): ask the site and print what it gives for the agent.
 
-Standard library only, on whatever python3 the machine has (3.9 and up): the plugin carries no packages. The shape
-of the old `pfc_read.py dongwo-opening`: the site, persona and key come from the plugin's options
-(CLAUDE_PLUGIN_OPTION_SITE / _PERSONA / _KEY); of the hook's 3 seconds, counted from when the wrapper started, the
-request gets what is left of 2.2 and runs in a daemon thread that is abandoned at the deadline (urllib's timeout
-bounds each socket step, not the whole request). Anything short of a good answer prints nothing; a too-long
-one is cut to MAX_TEXT and says so, never dropped. The log gets the
-end line (the wrapper wrote the start line): result, error kind and milliseconds, never content. A turn with nothing
-related is `empty`, not a miss.
+Standard library only, on whatever python3 the machine has (3.9 and up): the plugin carries no packages. The site is
+reached with the device login (`/apersona:login`, `apersona_login.py`) and nothing else; the site comes from the
+plugin's `site` option or is ours. Of the hook's 3 seconds, counted from when the wrapper started, the request gets
+what is left of 2.2 and runs in a daemon thread that is abandoned at the deadline (urllib's timeout bounds each socket
+step, not the whole request). Anything short of a good answer prints nothing; a too-long one is cut and says so, never
+dropped. The log gets the end line (the wrapper wrote the start line): result, error kind and milliseconds, never
+content. A turn with nothing related is `empty`, not a miss.
 
 A turn gives only a relevance hint; recall tools deliver the source text. Stop captures only explicitly
 consented new user messages, redacted before transmission, and records successful message ids for retries.
 
-`--client codex` is the same three hooks for the Codex CLI. Codex has no plugin options, so the site, persona and key
-file come from `~/.apersona/codex/config.json`, and the hook writes its own log lines and keeps its own clock. Codex's
-rollout is not a stable format to read, so each typed prompt is spooled at UserPromptSubmit (only after consent) and
-sent at Stop, and only when the rollout's first line says a person typed it (`cli` or `vscode`, never `codex exec`
-or a subagent).
+`--client codex` is the same three hooks for the Codex CLI. Codex has no plugin options, so the site comes from
+`~/.apersona/codex/config.json` (the login is the same device login), and the hook writes its own log lines and keeps
+its own clock. Codex's rollout is not a stable format to read, so each typed prompt is spooled at UserPromptSubmit
+(only after consent) and sent at Stop, and only when the rollout's first line says a person typed it (`cli` or
+`vscode`, never `codex exec` or a subagent).
 """
 
 from __future__ import annotations
@@ -32,21 +31,30 @@ import sys
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from apersona_mask import redact_secrets  # noqa: E402  (the site's own masking, word for word)
+from apersona_safe import clean, fenced, open_url  # noqa: E402
+
 BUDGET_S = 2.2
-MAX_TEXT = 10_000
-CUT_NOTICE = "（開場包超過上限，已截）"
+#: the most of the site's words one hook puts in front of the model: the opening (as the site's own 8,000) and a turn
+MAX_TEXT = 8_000
+MAX_TURN_TEXT = 300
+CUT_NOTICE = "（超過上限，已截）"
+#: a user row of the transcript that is not his typing: what `!` commands and slash commands put there
+NOT_TYPED = ("<bash-", "<local-command", "<command-")
 CONSENT_TEXT = "同意收錄本人在 Claude Code 新打的字；秘密先遮、可撤回、素材每日合併讀。"
 CONSENT_SHA256 = hashlib.sha256(CONSENT_TEXT.encode()).hexdigest()
 CODEX_CONSENT_TEXT = "同意收錄本人在 Codex 親自新打的字（codex exec 與子代理不收）；秘密先遮、可撤回、素材每日合併讀。"
 CODEX_CONSENT_SHA256 = hashlib.sha256(CODEX_CONSENT_TEXT.encode()).hexdigest()
 CODEX_INTERACTIVE = frozenset({"cli", "vscode"})
+#: what he types himself, at a terminal, to turn 收錄 on; nothing else does
+CONSENT_PHRASE = "我同意"
 SESSION_META_CAP = 1024 * 1024
 MAX_CAPTURED_TEXT = 100_000
 # The site will not change its mind about these, so a spooled prompt it refused is dropped, not retried.
@@ -67,12 +75,6 @@ def data_dir(client: str = "claude") -> Path | None:
             return None
     data = os.environ.get("CLAUDE_PLUGIN_DATA", "")
     return Path(data) / "apersona" if data else None
-
-
-def redact(content: str) -> str:
-    content = re.sub(r"(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[秘密已遮]", content)
-    content = re.sub(r"(?i)(?:sk-[\w-]{12,}|apersona_token_[\w-]+|Bearer\s+[\w./+=-]+)", "[秘密已遮]", content)
-    return re.sub(r"(?im)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+", r"\1[秘密已遮]", content)
 
 
 def consent_path(client: str = "claude") -> Path:
@@ -96,7 +98,46 @@ def consent(client: str = "claude") -> dict[str, object]:
     return record if record.get("on") is True and record.get("sha256") == wanted else {}
 
 
-def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: float) -> None:
+def write_consent(client: str, on: bool) -> None:
+    "Record his answer (the consent text's hash and when); a no also drops what Codex spooled."
+    path = consent_path(client)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sha = CODEX_CONSENT_SHA256 if client == "codex" else CONSENT_SHA256
+    record = {"on": on, "sha256": sha, "since": datetime.now(timezone.utc).isoformat()}  # noqa: UP017
+    path.write_text(json.dumps(record), encoding="utf-8")
+    data = data_dir(client)
+    if not on and client == "codex" and data is not None:
+        clear_spool(data)
+
+
+def answer_consent(client: str, answer: str) -> int:
+    """`--consent yes|no`. No is recorded at once. Yes only from a person at a terminal (stdin a TTY) who reads the
+    consent text and types CONSENT_PHRASE himself: an agent's command, a pipe or anything written into the
+    conversation cannot turn 收錄 on. 0 when what he asked for is recorded."""
+    if answer == "no":
+        write_consent(client, False)
+        print("收錄已關閉。")
+        return 0
+    if not sys.stdin.isatty():
+        print("收錄要本人在自己的終端機打開（不能由 AI 代為執行）。請在終端機執行：")
+        here = f'python3 "{Path(__file__).resolve()}" --consent yes' + (" --client codex" if client == "codex" else "")
+        data = os.environ.get("CLAUDE_PLUGIN_DATA", "")
+        print(f'  CLAUDE_PLUGIN_DATA="{data}" {here}' if client == "claude" and data else "  " + here)
+        return 1
+    print("同意書：" + (CODEX_CONSENT_TEXT if client == "codex" else CONSENT_TEXT))
+    try:
+        typed = input(f"要開，請輸入「{CONSENT_PHRASE}」；其他任何輸入都是不開：").strip()
+    except EOFError:
+        typed = ""
+    except OSError:
+        typed = ""
+    on = typed == CONSENT_PHRASE
+    write_consent(client, on)
+    print("收錄已開啟；隨時可用 --consent no 撤回。" if on else "沒有開啟，收錄維持關閉。")
+    return 0 if on else 1
+
+
+def capture_stop(site: str, key: str, hook_input: str, deadline: float) -> None:
     "Only user text after explicit consent; retries reuse the transcript message uuid."
     approval = consent()
     if not approval:
@@ -111,9 +152,7 @@ def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: f
     since = datetime.fromisoformat(str(approval.get("since", "")).replace("Z", "+00:00"))
     if since.tzinfo is None:
         return
-    ack = (
-        consent_path().parent / "captured" / (hashlib.sha256((site + persona + session).encode()).hexdigest() + ".json")
-    )
+    ack = consent_path().parent / "captured" / (hashlib.sha256((site + session).encode()).hexdigest() + ".json")
     try:
         sent: set[str] = set(cast("list[str]", json.loads(ack.read_text(encoding="utf-8"))))
     except OSError:
@@ -134,8 +173,8 @@ def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: f
         if not isinstance(row, dict):
             continue
         row = cast("dict[str, object]", row)
-        if row.get("type") != "user" or row.get("isMeta"):
-            continue
+        if row.get("type") != "user" or row.get("isMeta") or row.get("isCompactSummary"):
+            continue  # a compacted conversation's summary is the model's words, not his
         if not isinstance(row.get("timestamp"), str) or row.get("uuid") in sent:
             continue
         try:
@@ -159,10 +198,11 @@ def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: f
             )
         if not isinstance(content, str) or not content.strip() or not row.get("uuid"):
             continue
-        content = redact(content)
+        if content.lstrip().startswith(NOT_TYPED):
+            continue  # a `!` command's output or a slash command, not his words
+        content = redact_secrets(content)
         identifier = str(row["uuid"])
         payload = {
-            **({"personaId": persona} if persona else {}),
             "turnId": session + ":" + identifier,
             "messageId": identifier,
             "text": content,
@@ -180,16 +220,17 @@ def capture_stop(site: str, persona: str, key: str, hook_input: str, deadline: f
         ack.write_text(json.dumps(sorted(sent)), encoding="utf-8")
 
 
-def login_bearer(site: str, left_s: float) -> tuple[str, str, str]:
-    """The site and access token of the device login (`apersona_login.py`), no persona: the site takes the one the
-    login stands for. The hook never logs in; with none it is `not_configured`, as with nothing set at all."""
+def login_bearer(site: str, left_s: float) -> tuple[str, str]:
+    """The site and access token of the device login (`apersona_login.py`), the only way the hook reaches the site;
+    no persona: the site takes the one the login stands for. The hook never logs in and never trades: with none it
+    is `not_configured`, with an access token at its end `token_expiring` (a trade is started in the background)."""
     try:
-        import apersona_login  # beside this file; the Codex copy of the hook has no such neighbour
+        import apersona_login  # beside this file (copied beside it for Codex)
     except ImportError:
         raise MissError("not_configured") from None
-    where = (site or apersona_login.DEFAULT_SITE).rstrip("/")
     try:
-        return where, "", apersona_login.bearer(where, max(0.1, left_s))
+        where = apersona_login.site_of(site)
+        return where, apersona_login.bearer(where, max(0.1, left_s), trade=False)
     except apersona_login.LoginError as e:
         raise MissError("not_configured" if e.kind == "not_logged_in" else e.kind) from None
 
@@ -198,9 +239,8 @@ def now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
-def opening_request(site: str, persona: str, key: str) -> urllib.request.Request:
-    query = urllib.parse.urlencode({"personaId": persona} if persona else {})
-    url = site.rstrip("/") + "/api/memory/opening" + ("?" + query if query else "")
+def opening_request(site: str, key: str) -> urllib.request.Request:
+    url = site.rstrip("/") + "/api/memory/opening"
     return urllib.request.Request(url, headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
 
 
@@ -217,12 +257,9 @@ def typed_turn(hook_input: str) -> tuple[str, str]:
     return session, prompt
 
 
-def turn_request(
-    site: str, persona: str, key: str, session: str, prompt: str, received: list[str] | None
-) -> urllib.request.Request:
-    fields: dict[str, object] = {"sessionId": session, "prompt": prompt}
-    if persona:  # an OAuth login has none: the site takes the one the login stands for
-        fields["personaId"] = persona
+def turn_request(site: str, key: str, session: str, prompt: str, received: list[str] | None) -> urllib.request.Request:
+    # what he typed leaves the machine with its secrets dropped first, as everything the plugin sends
+    fields: dict[str, object] = {"sessionId": session, "prompt": redact_secrets(prompt)}  # the login's persona
     if received is not None:
         fields["received"] = received
     body = json.dumps(fields).encode("utf-8")
@@ -272,7 +309,7 @@ def fetch_text(request: urllib.request.Request, deadline_s: float) -> tuple[str,
 
     def call() -> None:
         try:
-            with urllib.request.urlopen(request, timeout=deadline_s) as response:
+            with open_url(request, deadline_s) as response:
                 outcome.append(json.loads(response.read().decode("utf-8")))
         except urllib.error.HTTPError as e:
             outcome.append(MissError(f"http_{e.code}"))
@@ -330,17 +367,20 @@ def log_end(event_id: str, kind: str, result: str, error: str, started_ms: int, 
 def deliver(
     text: str, ids: list[str], session: str, kind: str, event_id: str, started_ms: int, client: str, error: str = ""
 ) -> None:
-    "Print what the site gave (cut to MAX_TEXT), keep the ids of a turn, and log how it went."
+    """Print what the site gave as data: control characters out, cut to MAX_TEXT (a turn to MAX_TURN_TEXT), between
+    the plugin's own two lines; keep the ids of a turn, and log how it went."""
+    text = clean(text).strip()
     if not text:
         if session:
             save_received(session, [], client)
         log_end(event_id, kind, "empty", error, started_ms, client)
         return
     # UTF-8 bytes, not the console's code page: on a Chinese-locale Windows the default encoding cannot write it all.
-    cut = len(text) > MAX_TEXT
+    limit = MAX_TURN_TEXT if kind == "turn" else MAX_TEXT
+    cut = len(text) > limit
     if cut:
-        text = text[:MAX_TEXT] + "\n" + CUT_NOTICE
-    sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+        text = text[:limit] + "\n" + CUT_NOTICE
+    sys.stdout.buffer.write((fenced(text) + "\n").encode("utf-8"))
     sys.stdout.flush()
     if session:
         save_received(session, ids, client)
@@ -400,23 +440,21 @@ def switched_off(data: Path) -> bool:
     return re.search(r'"on"\s*:\s*false', text) is not None
 
 
-def codex_config(data: Path) -> tuple[str, str, str]:
-    "Site, persona and key from the installer's config.json; anything missing or unreadable is not_configured."
+def codex_config(data: Path) -> str:
+    "The site from the installer's config.json (the login is the device login's); unreadable is not_configured."
     try:
-        fields = cast("dict[str, object]", json.loads((data / "config.json").read_text(encoding="utf-8")))
-        site, persona, key_file = fields["site"], fields["persona"], fields["key_file"]
-        key = Path(str(key_file)).read_text(encoding="utf-8").strip()
+        site = cast("dict[str, object]", json.loads((data / "config.json").read_text(encoding="utf-8")))["site"]
     except OSError:
         raise MissError("not_configured") from None
     except ValueError:
         raise MissError("not_configured") from None
     except KeyError:
         raise MissError("not_configured") from None
-    except AttributeError:
+    except TypeError:
         raise MissError("not_configured") from None
-    if not (isinstance(site, str) and isinstance(persona, str) and site and persona and key):
+    if not isinstance(site, str) or not site:
         raise MissError("not_configured")
-    return site, persona, key
+    return site
 
 
 def spool_file(data: Path, session: str) -> Path:
@@ -428,7 +466,7 @@ def spool_turn(data: Path, session: str, fields: dict[str, object]) -> None:
     turn_id, prompt = fields.get("turn_id"), fields.get("prompt")
     if not isinstance(turn_id, str) or not turn_id or not isinstance(prompt, str):
         return
-    text = redact(prompt.strip())[:MAX_CAPTURED_TEXT]
+    text = redact_secrets(prompt.strip())[:MAX_CAPTURED_TEXT]
     if not text.strip():
         return
     row = {"turn_id": turn_id, "text": text, "at": datetime.now(timezone.utc).isoformat()}  # noqa: UP017
@@ -490,9 +528,7 @@ def typed_since(at: str, since: datetime) -> bool:
     return when.tzinfo is not None and since.tzinfo is not None and when >= since
 
 
-def codex_stop(
-    data: Path, site: str, persona: str, key: str, fields: dict[str, object], deadline: float
-) -> tuple[str, str]:
+def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadline: float) -> tuple[str, str]:
     "(result, error) for the log. Sends the spooled prompts of a session a person typed; fails closed on the source."
     session = fields.get("session_id")
     if not isinstance(session, str) or not session:
@@ -511,7 +547,7 @@ def codex_stop(
     except ValueError:
         return "miss", "bad_consent"
     entries = [e for e in read_spool(spool) if typed_since(e.get("at", ""), since)]
-    ack = data / "captured" / (hashlib.sha256((site + persona + session).encode()).hexdigest() + ".json")
+    ack = data / "captured" / (hashlib.sha256((site + session).encode()).hexdigest() + ".json")
     try:
         sent: set[str] = set(cast("list[str]", json.loads(ack.read_text(encoding="utf-8"))))
     except OSError:
@@ -527,7 +563,6 @@ def codex_stop(
                 if time.monotonic() >= deadline or consent("codex") != approval:
                     break
                 payload = {
-                    "personaId": persona,
                     "turnId": session + ":" + identifier,
                     "messageId": identifier,
                     "text": entry["text"],
@@ -563,17 +598,7 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
     if data is None:
         return 0
     if consent_answer is not None:
-        path = consent_path("codex")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "on": consent_answer == "yes",
-            "sha256": CODEX_CONSENT_SHA256,
-            "since": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
-        }
-        path.write_text(json.dumps(record), encoding="utf-8")
-        if consent_answer == "no":
-            clear_spool(data)
-        return 0
+        return answer_consent("codex", consent_answer)
     if switched_off(data):
         return 0
     event_id = f"ev-{started_ms}-{os.getpid()}-{os.urandom(2).hex()}"
@@ -581,7 +606,7 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
         return 0
     session, note = "", ""
     try:
-        site, persona, key = codex_config(data)
+        site, key = login_bearer(codex_config(data), BUDGET_S - (now_ms() - started_ms) / 1000)
         fields = hook_fields(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
         if fields.get("agent_id") is not None:
             log_end(event_id, kind, "skipped", "skipped_agent", started_ms, "codex")
@@ -589,7 +614,7 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
         if kind == "stop":
             deadline = time.monotonic() + max(0, BUDGET_S - (now_ms() - started_ms) / 1000)
             try:
-                result, error = codex_stop(data, site, persona, key, fields, deadline)
+                result, error = codex_stop(data, site, key, fields, deadline)
             except OSError:
                 result, error = "miss", "capture_failed"
             log_end(event_id, kind, result, error, started_ms, "codex")
@@ -608,9 +633,9 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
                     spool_turn(data, session, fields)
                 except OSError:
                     note = "spool_failed"
-            request = turn_request(site, persona, key, session, prompt, load_received(session, "codex"))
+            request = turn_request(site, key, session, prompt, load_received(session, "codex"))
         else:
-            request = opening_request(site, persona, key)
+            request = opening_request(site, key)
         text, ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
         if not text and kind == "opening":
             raise MissError("bad_response")
@@ -632,30 +657,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.client == "codex":
         return codex_main(args.kind, args.consent)
     if args.consent is not None:
-        path = consent_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "on": args.consent == "yes",
-                    "sha256": CONSENT_SHA256,
-                    "since": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
-                }
-            ),
-            encoding="utf-8",
-        )
-        return 0
+        try:
+            return answer_consent("claude", args.consent)
+        except MissError:
+            print("找不到外掛的資料夾（CLAUDE_PLUGIN_DATA）；照 /apersona:login 最後給的那一行執行")
+            return 1
     started_ms = args.started_ms or now_ms()
-    site, persona, key = (os.environ.get("CLAUDE_PLUGIN_OPTION_" + k, "") for k in ("SITE", "PERSONA", "KEY"))
     session = ""
     try:
-        if not (site and persona and key):  # no old key set: the login `/apersona:login` left, if there is one
-            site, persona, key = login_bearer(site, BUDGET_S - (now_ms() - started_ms) / 1000)
+        # the device login only: an old key left in the plugin's options is never read, let alone sent
+        site, key = login_bearer(
+            os.environ.get("CLAUDE_PLUGIN_OPTION_SITE", ""), BUDGET_S - (now_ms() - started_ms) / 1000
+        )
         if args.kind == "stop":
             try:
                 capture_stop(
                     site,
-                    persona,
                     key,
                     sys.stdin.buffer.read().decode("utf-8", errors="replace"),
                     time.monotonic() + max(0, BUDGET_S - (now_ms() - started_ms) / 1000),
@@ -669,9 +686,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.kind == "turn":
             hook_input = sys.stdin.buffer.read().decode("utf-8", errors="replace")
             session, prompt = typed_turn(hook_input)
-            request = turn_request(site, persona, key, session, prompt, load_received(session))
+            request = turn_request(site, key, session, prompt, load_received(session))
         else:
-            request = opening_request(site, persona, key)
+            request = opening_request(site, key)
         text, ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
         if not text and args.kind == "opening":
             raise MissError("bad_response")
