@@ -29,7 +29,9 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       keeps what it prepared and never reads it (as for a batch left without a yes for 7 days).
 - `status`            where each batch's read stands (`GET /api/intake/files`).
 - `cancel`            the parts of the batches he agreed to that are not read yet are not read (`POST
-                      /api/intake/cancel`); what went up is kept (取消是「這次先不要」).
+                      /api/intake/cancel`); what went up is kept (取消是「這次先不要」). Which batches count as agreed
+                      to is asked of the site (`GET /api/intake/files`), so a yes the site took but whose reply never
+                      reached this machine is cancelled too; `status` reads the site the same way.
 
 The work folder is `~/.apersona/intake/<hash of the folder's path>/` (700, its files 600), never inside the material
 folder, which may be synced to a cloud drive or committed to git. The code table (`aliases.json`) is never sent.
@@ -520,15 +522,23 @@ def said(answers: list[dict[str, object]], local: dict[str, str], held: list[tup
     for a in answers:
         for row in cast("list[dict[str, object]]", a.get("unreadableParts") or []):
             why[str(row.get("reason"))] = why.get(str(row.get("reason")), 0) + int(cast(int, row.get("count") or 0))
-    found = [f"收到 {len(files) + len(held)} 份，{readable} 段能讀"]
+    found = [f"收到 {len(files)} 份，{readable} 段能讀"]
     if why:
         found[0] += f"，{sum(why.values())} 段讀不了（" + "、".join(f"{k} {n}" for k, n in why.items()) + "）"
     for f in files:
         name = local.get(str(f.get("name")), "（不明的檔）")
         found.append(f"- {name}：{f.get('reason') or str(f.get('usable')) + ' 段能讀'}")
     agreeable = [a for a in answers if a.get("consentSha256")]
-    found += [str(a["free"]) for a in agreeable[:1] if a.get("free")]
+    found += [
+        str(a.get("estimateWords") or a.get("free")) for a in agreeable[:1] if a.get("estimateWords") or a.get("free")
+    ]
     lines = [fenced("\n".join(found))]
+    if local:
+        skipped = f"，沒送 {len(held)} 份" if held else ""
+        lines.append(f"本機送出 {len(local)} 份{skipped}；網站上看到的檔名是隨機的，對照如下：")
+        lines += [f"- {name} ＝ {path}" for name, path in sorted(local.items(), key=lambda item: item[1])]
+        if files and len(files) != len(local):
+            lines.append(f"注意：本機送出 {len(local)} 份，網站只回報收到 {len(files)} 份；對不上的請回報給開發者")
     lines += [f"- 沒送：{path}：{reason}" for path, reason in held]
     if left_out:
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，沒有送")
@@ -542,13 +552,20 @@ def said(answers: list[dict[str, object]], local: dict[str, str], held: list[tup
     return "\n".join(lines)
 
 
+def _on_free(answer: dict[str, object]) -> bool:
+    "Whether the site says this batch's yes is on the free extraction: its `onFree`, else (older site) its sentence."
+    if "onFree" in answer:
+        return answer["onFree"] is True
+    return str(answer.get("question") or "").startswith("用免費額度")
+
+
 def question(agreeable: list[dict[str, object]], n: int) -> str:
     "The one sentence for every batch, made here from the count: on the free extraction when the site says so."
     metadata = sum(int(cast(int, a.get("metadataParts") or 0)) for a in agreeable)
     readable = sum(int(cast(int, a.get("readableParts") or 0)) for a in agreeable)
     if metadata and not readable:
         return f"補登這 {metadata} 份完整訊息觀測，不重新讀取、不花額度"
-    free = all(bool(a.get("free")) or str(a.get("question") or "").startswith("用免費額度") for a in agreeable)
+    free = all(_on_free(a) for a in agreeable)
     answer = f"用免費額度讀這 {n} 份" if free else f"用你的額度讀這 {n} 份"
     return answer + (f"；另補登 {metadata} 份完整訊息觀測，不重讀、不花額度" if metadata else "")
 
@@ -596,7 +613,7 @@ def consent(work: Path, yes: bool) -> int:
 
 
 def status(work: Path) -> int:
-    "`status`: where each batch's read stands."
+    "`status`: where each batch's read stands, and which file is which under the random names the site shows."
     site, persona, key = options()
     for a in cast("list[dict[str, object]]", _uploads(work)["answers"]):
         query = {**who(persona), "job": str(a["jobId"])}
@@ -605,15 +622,34 @@ def status(work: Path) -> int:
             print(fenced(f"{a['jobId']}：還沒同意"))
         else:
             print(fenced(f"{a['jobId']}：{now.get('state')}，已讀 {now.get('done')}／{now.get('total')} 段"))
+    mapping = read_json(work / "files.json")
+    if isinstance(mapping, dict) and mapping:
+        print("檔名對照（網站上看到的名字 ＝ 本機檔）：")
+        for name, path in sorted(cast("dict[str, object]", mapping).items(), key=lambda item: str(item[1])):
+            print(f"- {name} ＝ {path}")
     return 0
 
 
+def agreed_on_site(
+    site: str, persona: str, key: Callable[[], str] | str, answers: list[dict[str, object]]
+) -> list[str]:
+    """The batches of the last `ask` the site holds as agreed to, asked of the site itself: a yes whose reply was lost
+    on the way here (timeout, dropped connection) still counts there, and what this machine wrote down does not."""
+    agreed: list[str] = []
+    for a in answers:
+        query = {**who(persona), "job": str(a["jobId"])}
+        if patiently(partial(get, site, FILES_PATH, key, query), "查進度").get("agreed"):
+            agreed.append(str(a["jobId"]))
+    return agreed
+
+
 def cancel(work: Path) -> int:
-    "`cancel`: what he agreed to and is not read yet is not read; what went up stays."
+    """`cancel`: what he agreed to and is not read yet is not read; what went up stays. Which batches he agreed to is
+    the site's record, not this machine's: a yes the site took but whose reply never arrived is cancelled too."""
     site, persona, key = options()
     record = _uploads(work)
     said_last = ""
-    for job in cast("list[str]", record.get("agreed") or []):
+    for job in agreed_on_site(site, persona, key, cast("list[dict[str, object]]", record["answers"])):
         query = {**who(persona), "job": job}
         prints: object = patiently(partial(get, site, SEGMENTS_PATH, key, query), "取消").get("fingerprints") or []
         body: dict[str, object] = {**who(persona), "jobId": job, "fingerprints": prints}

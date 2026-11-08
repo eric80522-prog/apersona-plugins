@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "apersona",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "本人的規矩、記憶目錄與判讀摘要在開場交給你的 agent；決策點用 MCP 查預註冊的預決策，事後回報結果對照。",
   "author": {
     "name": "eric80522-prog"

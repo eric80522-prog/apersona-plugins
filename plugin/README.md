@@ -77,6 +77,10 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 - 收錄預設關。在終端機裝時會問一次，看過 Codex 版的同意書後打「我同意」才開；之後用 `apersona_codex.py consent yes|no` 開關（開也要在終端機親手打）。每句本人打的字先遮秘密、存在本機 `~/.apersona/codex/spool/`，Stop 時確認是本人在 `cli` 或 `vscode` 親自打的才送；`codex exec`、子代理、來源看不出來的一律不送，暫存直接刪。
 - 開關與狀態：`apersona_codex.py off`／`on`／`status`；拆掉：`apersona_codex.py uninstall`。記錄在 `~/.apersona/codex/events.jsonl`，只記開始、結束、結果與錯誤種類，不記內容。
 
+## 其他平台（Gemini CLI、Grok、只有工具前事件的工具）
+
+`scripts/apersona_feed.py`。這些平台沒有可信的「這是本人新打的一句」識別，所以不自動收：本人自己 `send`，並自己給這一輪的 `--id`；沒給就回 `id_required`，什麼都不存不送。Gemini 的 BeforeAgent hook 同樣回 `id_required`，AfterAgent 與工具前事件只負責叫醒送出已同意的待送列，模型回答與工具參數一律不收。每個平台有自己的同意書（`consent --platform … yes`，在終端機親手打「我同意」），`consent … no` 立刻關並清掉待送。細節與錯誤碼見 `docs/development/plugin_platforms.md`。
+
 ## 只停用一個專案
 
 Claude Code：執行 `python3 <外掛>/scripts/apersona_hook.py --project-state off --project-directory <專案目錄>`；Codex：執行 `python <外掛>/scripts/apersona_codex.py off --project <專案目錄>`。把 `off` 換成 `on` 可重新開啟。路徑含空白時加引號。

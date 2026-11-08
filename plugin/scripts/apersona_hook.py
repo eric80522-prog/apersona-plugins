@@ -50,6 +50,8 @@ MAX_TEXT = 8_000
 MAX_TURN_TEXT = 300
 CUT_NOTICE = "（資料未完整交付；以下只有前段，未登記為已收到。）"
 OPENING_CUT_NOTICE = "（開場資料未完整交付；本人更正或規矩可能缺漏，可用 opening 取回伺服器開場包。）"
+#: what the model is told when the opening did not arrive in time: one line, so it fetches the pack itself
+OPENING_LATE_NOTICE = "（開場包這次在時限內沒拿到；請先自己呼叫 apersona 的 opening 工具取回，再回答本人。）"
 #: a user row of the transcript that is not his typing: what `!` commands and slash commands put there
 NOT_TYPED = ("<bash-", "<local-command", "<command-")
 CONSENT_TEXT = "同意收錄本人在 Claude Code 新打的字；秘密先遮、可撤回、素材每日合併讀。"
@@ -351,6 +353,14 @@ def append_log(row: dict[str, object], client: str = "claude") -> bool:
     except OSError:
         return False
     return True
+
+
+def miss(event_id: str, kind: str, error: MissError, started_ms: int, client: str) -> None:
+    "Log a miss; an opening that ran out of time also leaves the one line that sends the model to fetch it."
+    if kind == "opening" and str(error) == "deadline":
+        sys.stdout.buffer.write((OPENING_LATE_NOTICE + "\n").encode("utf-8"))
+        sys.stdout.flush()
+    log_end(event_id, kind, "miss", str(error), started_ms, client)
 
 
 def log_end(
@@ -754,7 +764,7 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
         if not text and kind == "opening":
             raise MissError("bad_response")
     except MissError as e:
-        log_end(event_id, kind, "miss", str(e), started_ms, "codex")
+        miss(event_id, kind, e, started_ms, "codex")
         return 0
     deliver(text, ids, session, kind, event_id, started_ms, "codex", note)
     return 0
@@ -820,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
         if not text and args.kind == "opening":
             raise MissError("bad_response")
     except MissError as e:
-        log_end(args.event_id, args.kind, "miss", str(e), started_ms)
+        miss(args.event_id, args.kind, e, started_ms, "claude")
         return 0
     deliver(text, ids, session, args.kind, args.event_id, started_ms, "claude")
     return 0

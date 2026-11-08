@@ -2,7 +2,7 @@
 
     apersona_login.py login [--site URL]   show the address and short code, then wait for him to press 允許 on the
                                            website; run again to go on waiting (a code lives ten minutes)
-    apersona_login.py status               logged in or not (never prints a token); trades an ending access token
+    apersona_login.py status               logged in or not, asked of the site (never prints a token)
     apersona_login.py refresh              trade an ending access token now, quietly (what the hook starts)
     apersona_login.py logout               sign this machine out on the website and delete the credentials file
 
@@ -266,11 +266,13 @@ def bearer(
     clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
     trade: bool = True,
+    verify: bool = False,
 ) -> str:
     """The access token for `site`, traded for a new pair first when it has ended or is about to. `LoginError`
     `not_logged_in` when `login` was never run for this site (or the device was signed out: then the file is
     removed and he logs in again), `login_busy` when another process is trading and did not finish in time, and
-    `token_expiring` instead of a trade when `trade` is False (the hook)."""
+    `token_expiring` instead of a trade when `trade` is False (the hook). `verify` trades even a token that has not
+    ended: only the site knows whether he signed this device out on the website, and a trade is how to ask."""
     record = read_credentials()
     access, refresh, client_id = record.get("access"), record.get("refresh"), record.get("client_id")
     if record.get("site") != site or not (isinstance(access, str) and isinstance(refresh, str)):
@@ -278,7 +280,7 @@ def bearer(
     left = float(cast("float", record.get("expires_at") or 0)) - clock()
     if not trade and left <= AHEAD_S:
         refresh_in_background()
-    if left > SKEW_S:
+    if left > SKEW_S and not verify:
         return access
     if not trade:
         raise LoginError("token_expiring", "通行證快到期，背景正在換新；下一句就會帶")
@@ -291,7 +293,7 @@ def bearer(
         access, refresh = record.get("access"), record.get("refresh")
         if not (isinstance(access, str) and isinstance(refresh, str)):
             raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
-        if float(cast("float", record.get("expires_at") or 0)) - clock() > SKEW_S:
+        if float(cast("float", record.get("expires_at") or 0)) - clock() > SKEW_S and not verify:
             return access
         answer = _post(
             site,
@@ -378,8 +380,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"還沒登入 {site}；執行 /apersona:login")
             return EXIT_NOT_LOGGED_IN
         try:
-            bearer(site)  # an ending access token is traded here, with no hook's clock running
+            # status asks the site (a trade): a device signed out on the website still holds a token that looks fine
+            bearer(site, verify=args.command == "status")
         except LoginError as e:
+            if args.command == "status" and e.kind == "unreachable":
+                print(f"本機有 {site} 的登入檔，但連不上網站，無法確認是否已在網站撤銷（{e}）")
+                return 1
             if args.command == "status":
                 print(str(e))
             return EXIT_NOT_LOGGED_IN if e.kind in ("not_logged_in", "login_ended") else 1
