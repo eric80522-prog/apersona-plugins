@@ -8,7 +8,7 @@ plugin_data="${CLAUDE_PLUGIN_DATA:-}"
 case "${1:-opening}" in
   turn) kind=turn ;;
   stop) kind=stop ;;
-  *) kind=opening; exec </dev/null ;;
+  *) kind=opening ;;
 esac
 # On from install; only an explicit /apersona:off turns it off.
 if [ -z "$plugin_data" ] || grep -Eq '"on"[[:space:]]*:[[:space:]]*false' "$plugin_data/apersona.json"; then

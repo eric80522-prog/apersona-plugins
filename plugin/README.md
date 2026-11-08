@@ -25,13 +25,13 @@ Claude.ai／ChatGPT：在連接器加 `https://www.apersonaai.com/mcp`，登入�
 MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 OAuth 授權決定人格：
 
 - `lookup`：決策點由你的 agent 呼叫，查預註冊的預決策。
-- `report_outcome`：事後回報實際做法（回報前先問本人一句「做之前看過這份嗎」，本人答的傳 `owner_yes`／`owner_no`，agent 替答的傳 `agent_yes`／`agent_no`，不知道就不傳；知道他動手的時刻就帶 `acted_at`，ISO 格式帶時區）。
+- `report_outcome`：事後回報實際做法。必填 `registration_id`（原預註冊識別）與 `episode`；`episode` 帶 `happened_on`（發生日期）、`moves`（依實際順序的做法）、`relation`（關係）與 `description`（事情描述）。每步做法的 `stance`、`toward`、`style` 依工具 schema 選值，`target` 填對誰做，不知道就不猜。回報前先問本人一句「做之前看過這份嗎」：答案放 `seen_before`，本人答的用 `owner_yes`／`owner_no`，agent 替答的用 `agent_yes`／`agent_no`；不知道就省略（預設 `unknown`）。`acted_at` 選填動手時刻，ISO 格式且帶時區；`turn_id` 選填這輪識別。
 - `claim`：記下本人的話（常設規矩、單次要求、行為宣稱、決定簡報）。本人說「不對，我不會這樣」時用 `kind=correction` 記成本人更正：當下生效，下一輪與新對話都照做，不改判讀與既有預測；`withdraws` 填那則更正的編號就是撤回。
 - `scorecard`：看計分卡。
 - `source`（看出處）：封包出處段寫的「第 N 件」用它查日期、來源種類與格名，不回原文。
-- `recall`（主動回想）：問「他以前碰到這類事怎麼做、說過什麼」，回本人原話與日期，做法不同的一次會標出，可限領域；不是判讀。幾則由叫用的 AI 照任務填 `count`，不填就回所有夠相關的、最相關的在前；回覆超過約 12,000 字就截掉後面整則並說還有幾則，同一個對話再叫會接著給。每則寫「第 N 件（日期，來源）」，N 是這一次回覆裡的序號。
+- `recall`（主動回想）：問「他以前碰到這類事怎麼做、說過什麼」，回本人原話與日期，做法不同的一次會標出，可限領域；不是判讀。它只比字、不比意思，所以 `question` 在想問的那句後面再附幾個他可能用的說法（同義詞、中英文寫法、更具體的名詞），不要附跟這件事無關的詞。幾則由叫用的 AI 照任務填 `count`（填少於 8 也回到 8 則，相關的有那麼多時；用字不同的記憶常排在後面），不填就回所有夠相關的、最相關的在前；回覆超過約 12,000 字就截掉後面整則並說還有幾則，同一個對話再叫會接著給。每則寫「第 N 件（日期，來源）」，N 是這一次回覆裡的序號。
 - `answer_citations`（回報引用）：`recall` 或 `lookup` 的回覆有「第 N 件」，你的回答若用到其中幾件，把那幾個 N 填進 `numbers`（例如 `[1, 3]`），算最近一次帶編號的回覆；都沒用到就不要呼叫。記成「客戶回報、未驗證」。
-- `opening`（開場包）：沒有開場 hook 的客戶端（例如只能接遠端 MCP 的雲端 bot）在對話開頭叫一次，拿到的跟開場 hook 同一包，別人（分享來的）拿到的比本人少；已經由 hook 拿到的不用叫，也不要每輪叫。不改記憶，但每次呼叫留一筆交付收據。
+- `opening`（開場包）：沒有開場 hook 的客戶端（例如只能接遠端 MCP 的雲端 bot）在對話開頭叫一次，拿到的跟開場 hook 同一包；已經由 hook 拿到的不用叫，也不要每輪叫。不改記憶，但每次呼叫留一筆交付收據。
 - `delivery_history`：本人查某一輪實際交付的全文、版本、輸入指紋與來源足跡。
 - `retire_turn`：本人刪掉某一輪造成的改變，收據進回收區保留 90 天。
 - `inbox`（收件匣）：經 AI 對話收錄的素材、規矩與事實，加上等本人回答的題目（知會一張卡、確認一筆否認、矛盾選一邊），跟網站待確認頁同一份清單。
@@ -76,3 +76,11 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 - MCP 另外加（固定網址，Codex 自己走 OAuth 登入）：`codex mcp add apersona --url https://www.apersonaai.com/mcp`，再 `codex mcp login apersona`；拿掉：`codex mcp remove apersona`。
 - 收錄預設關。在終端機裝時會問一次，看過 Codex 版的同意書後打「我同意」才開；之後用 `apersona_codex.py consent yes|no` 開關（開也要在終端機親手打）。每句本人打的字先遮秘密、存在本機 `~/.apersona/codex/spool/`，Stop 時確認是本人在 `cli` 或 `vscode` 親自打的才送；`codex exec`、子代理、來源看不出來的一律不送，暫存直接刪。
 - 開關與狀態：`apersona_codex.py off`／`on`／`status`；拆掉：`apersona_codex.py uninstall`。記錄在 `~/.apersona/codex/events.jsonl`，只記開始、結束、結果與錯誤種類，不記內容。
+
+## 只停用一個專案
+
+Claude Code：執行 `python3 <外掛>/scripts/apersona_hook.py --project-state off --project-directory <專案目錄>`；Codex：執行 `python <外掛>/scripts/apersona_codex.py off --project <專案目錄>`。把 `off` 換成 `on` 可重新開啟。路徑含空白時加引號。
+
+開關寫在該目錄的 `.apersona.json`，套用到子目錄；父目錄停用時，子目錄不能自行覆蓋。停用會阻止開場、每輪比對與自動收錄，不影響其他專案，也不登出帳號。它只控制外掛 hook，不會取消手動 MCP 呼叫或已授權的手動送檔；要撤銷整台授權請登出。
+
+重新開啟只收錄這個時間之後的新內容，不補送停用期間的對話。Codex 待送內容帶本機專案來源，Stop 會再次核對；另一專案的 Stop 也不能送出已停用專案的內容。升級前沒有專案來源的舊暫存保持待送，不猜來源；撤回收錄同意可清除。專案路徑不會加入伺服器收錄請求。這個開關不代替收錄同意，也不能打開已關閉的整台 hook。

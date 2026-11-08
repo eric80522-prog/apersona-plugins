@@ -12,7 +12,7 @@ content. A turn with nothing related is `empty`, not a miss.
 A turn gives only a relevance hint; recall tools deliver the source text. Stop captures only explicitly
 consented new user messages, redacted before transmission, and records successful message ids for retries.
 
-`--client codex` is the same three hooks for the Codex CLI. Codex has no plugin options, so the site comes from
+`--client codex` is the same three hooks for the Codex CLI. This standalone installer reads the site from
 `~/.apersona/codex/config.json` (the login is the same device login), and the hook writes its own log lines and keeps
 its own clock. Codex's rollout is not a stable format to read, so each typed prompt is spooled at UserPromptSubmit
 (only after consent) and sent at Stop, and only when the rollout's first line says a person typed it (`cli` or
@@ -33,19 +33,23 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_mask import redact_secrets  # noqa: E402  (the site's own masking, word for word)
+from apersona_projects import allows, project_path, set_project  # noqa: E402
 from apersona_safe import clean, fenced, open_url  # noqa: E402
 
 BUDGET_S = 2.2
 #: the most of the site's words one hook puts in front of the model: the opening (as the site's own 8,000) and a turn
 MAX_TEXT = 8_000
 MAX_TURN_TEXT = 300
-CUT_NOTICE = "（超過上限，已截）"
+CUT_NOTICE = "（資料未完整交付；以下只有前段，未登記為已收到。）"
+OPENING_CUT_NOTICE = "（開場資料未完整交付；本人更正或規矩可能缺漏，可用 opening 取回伺服器開場包。）"
 #: a user row of the transcript that is not his typing: what `!` commands and slash commands put there
 NOT_TYPED = ("<bash-", "<local-command", "<command-")
 CONSENT_TEXT = "同意收錄本人在 Claude Code 新打的字；秘密先遮、可撤回、素材每日合併讀。"
@@ -181,7 +185,7 @@ def capture_stop(site: str, key: str, hook_input: str, deadline: float) -> None:
             written = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00"))
         except ValueError:
             continue
-        if written.tzinfo is None or written < since:
+        if written.tzinfo is None or written < since or not allows(fields.get("cwd"), str(row["timestamp"])):
             continue
         message = row.get("message", {})
         if not isinstance(message, dict):
@@ -349,7 +353,15 @@ def append_log(row: dict[str, object], client: str = "claude") -> bool:
     return True
 
 
-def log_end(event_id: str, kind: str, result: str, error: str, started_ms: int, client: str = "claude") -> None:
+def log_end(
+    event_id: str,
+    kind: str,
+    result: str,
+    error: str,
+    started_ms: int,
+    client: str = "claude",
+    sizes: dict[str, int] | None = None,
+) -> None:
     if not event_id:
         return
     row: dict[str, object] = {
@@ -361,6 +373,8 @@ def log_end(event_id: str, kind: str, result: str, error: str, started_ms: int, 
     }
     if error:
         row["error"] = error
+    if sizes is not None:
+        row.update(sizes)
     append_log(row, client)
 
 
@@ -369,7 +383,9 @@ def deliver(
 ) -> None:
     """Print what the site gave as data: control characters out, cut to MAX_TEXT (a turn to MAX_TURN_TEXT), between
     the plugin's own two lines; keep the ids of a turn, and log how it went."""
+    server_chars = len(text)
     text = clean(text).strip()
+    cleaned_chars = len(text)
     if not text:
         if session:
             save_received(session, [], client)
@@ -379,12 +395,27 @@ def deliver(
     limit = MAX_TURN_TEXT if kind == "turn" else MAX_TEXT
     cut = len(text) > limit
     if cut:
-        text = text[:limit] + "\n" + CUT_NOTICE
-    sys.stdout.buffer.write((fenced(text) + "\n").encode("utf-8"))
+        notice = CUT_NOTICE if kind == "turn" else OPENING_CUT_NOTICE
+        text = notice + "\n" + text[:limit]
+    output = (fenced(text) + "\n").encode("utf-8")
+    sys.stdout.buffer.write(output)
     sys.stdout.flush()
     if session:
-        save_received(session, ids, client)
-    log_end(event_id, kind, "truncated" if cut else "ok", error, started_ms, client)
+        save_received(session, [] if cut else ids, client)
+    log_end(
+        event_id,
+        kind,
+        "truncated" if cut else "ok",
+        error,
+        started_ms,
+        client,
+        {
+            "server_chars": server_chars,
+            "cleaned_chars": cleaned_chars,
+            "selected_chars": min(cleaned_chars, limit),
+            "stdout_utf8_bytes": len(output),
+        },
+    )
 
 
 def hook_fields(raw: str) -> dict[str, object]:
@@ -457,6 +488,42 @@ def codex_config(data: Path) -> str:
     return site
 
 
+@contextmanager
+def spool_lock(data: Path, deadline: float | None = None) -> Generator[None, None, None]:  # noqa: UP043 (Python 3.9)
+    "Serialize short spool/ack file changes across hook processes; never held during a request."
+    data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(data / ".spool.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+b") as stream:
+        if stream.seek(0, os.SEEK_END) == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        until = time.monotonic() + BUDGET_S if deadline is None else deadline
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= until:
+                    raise MissError("spool_busy") from None
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream, fcntl.LOCK_UN)
+
+
 def spool_file(data: Path, session: str) -> Path:
     return data / "spool" / (hashlib.sha256(session.encode("utf-8")).hexdigest()[:32] + ".jsonl")
 
@@ -469,12 +536,20 @@ def spool_turn(data: Path, session: str, fields: dict[str, object]) -> None:
     text = redact_secrets(prompt.strip())[:MAX_CAPTURED_TEXT]
     if not text.strip():
         return
-    row = {"turn_id": turn_id, "text": text, "at": datetime.now(timezone.utc).isoformat()}  # noqa: UP017
+    row = {
+        "turn_id": turn_id,
+        "text": text,
+        "at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+        "cwd": str(project_path(fields.get("cwd"))),
+    }
     path = spool_file(data, session)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "ab") as out:
-        out.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+    with spool_lock(data):
+        if not consent("codex") or not allows(row["cwd"], row["at"]):
+            return
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "ab") as out:
+            out.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
 def read_spool(path: Path) -> list[dict[str, str]]:
@@ -491,7 +566,14 @@ def read_spool(path: Path) -> list[dict[str, str]]:
         fields = cast("dict[str, object]", row) if isinstance(row, dict) else {}
         turn_id, text, at = fields.get("turn_id"), fields.get("text"), fields.get("at")
         if isinstance(turn_id, str) and isinstance(text, str):
-            entries.append({"turn_id": turn_id, "text": text, "at": at if isinstance(at, str) else ""})
+            entries.append(
+                {
+                    "turn_id": turn_id,
+                    "text": text,
+                    "at": at if isinstance(at, str) else "",
+                    "cwd": str(fields.get("cwd") or ""),
+                }
+            )
     return entries
 
 
@@ -513,10 +595,11 @@ def write_spool(path: Path, entries: list[dict[str, str]]) -> None:
 def clear_spool(data: Path) -> None:
     "Remove every spooled prompt (consent withdrawn)."
     folder = data / "spool"
-    if folder.is_dir():
-        for leftover in folder.iterdir():
-            if leftover.is_file():
-                leftover.unlink(missing_ok=True)
+    with spool_lock(data):
+        if folder.is_dir():
+            for leftover in folder.iterdir():
+                if leftover.is_file():
+                    leftover.unlink(missing_ok=True)
 
 
 def typed_since(at: str, since: datetime) -> bool:
@@ -536,11 +619,14 @@ def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadl
     spool = spool_file(data, session)
     approval = consent("codex")
     if not approval:
-        spool.unlink(missing_ok=True)
+        with spool_lock(data, deadline):
+            if not consent("codex"):
+                spool.unlink(missing_ok=True)
         return "ok", ""
     source = session_source(fields)
     if source not in CODEX_INTERACTIVE:
-        spool.unlink(missing_ok=True)
+        with spool_lock(data, deadline):
+            spool.unlink(missing_ok=True)
         return "skipped", "source_" + (source or "unknown")
     try:
         since = datetime.fromisoformat(str(approval.get("since", "")).replace("Z", "+00:00"))
@@ -559,6 +645,12 @@ def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadl
     try:
         for entry in entries:
             identifier = entry["turn_id"]
+            if not entry.get("cwd"):
+                continue  # Old spool has no project attribution; do not guess its permission.
+            if not allows(entry["cwd"], entry["at"]):
+                remaining.remove(entry)
+                dropped.append("project_disabled")
+                continue
             if identifier not in sent:
                 if time.monotonic() >= deadline or consent("codex") != approval:
                     break
@@ -583,11 +675,33 @@ def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadl
                     remaining.remove(entry)
                     continue
                 sent.add(identifier)
-                ack.parent.mkdir(parents=True, exist_ok=True)
-                ack.write_text(json.dumps(sorted(sent)), encoding="utf-8")
+                with spool_lock(data, deadline):
+                    try:
+                        sent.update(cast("list[str]", json.loads(ack.read_text(encoding="utf-8"))))
+                    except OSError:
+                        pass
+                    except ValueError:
+                        pass
+                    ack.parent.mkdir(parents=True, exist_ok=True)
+                    temp = ack.with_name(f".{ack.name}.{uuid.uuid4().hex}.tmp")
+                    try:
+                        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(fd, "w", encoding="utf-8") as out:
+                            out.write(json.dumps(sorted(sent)))
+                        os.replace(temp, ack)
+                    finally:
+                        temp.unlink(missing_ok=True)
             remaining.remove(entry)
     finally:
-        write_spool(spool, remaining)
+        with spool_lock(data, deadline):
+            current = consent("codex")
+            if not current:
+                spool.unlink(missing_ok=True)
+            elif current == approval:
+                completed = [e for e in entries if e not in remaining]
+                # Re-read under the append lock: a new prompt is not in this Stop's snapshot.
+                pending = [e for e in read_spool(spool) if e not in completed and typed_since(e.get("at", ""), since)]
+                write_spool(spool, pending)
     return "ok", ",".join(dropped)
 
 
@@ -599,7 +713,8 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
         return 0
     if consent_answer is not None:
         return answer_consent("codex", consent_answer)
-    if switched_off(data):
+    fields = hook_fields(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+    if switched_off(data) or not allows(fields.get("cwd")):
         return 0
     event_id = f"ev-{started_ms}-{os.getpid()}-{os.urandom(2).hex()}"
     if not append_log({"event_id": event_id, "kind": kind, "phase": "start", "ts_ms": started_ms}, "codex"):
@@ -607,7 +722,6 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
     session, note = "", ""
     try:
         site, key = login_bearer(codex_config(data), BUDGET_S - (now_ms() - started_ms) / 1000)
-        fields = hook_fields(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
         if fields.get("agent_id") is not None:
             log_end(event_id, kind, "skipped", "skipped_agent", started_ms, "codex")
             return 0
@@ -653,7 +767,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--event-id", default="")
     parser.add_argument("--started-ms", type=int, default=0)
     parser.add_argument("--client", choices=("claude", "codex"), default="claude")
+    parser.add_argument("--project-state", choices=("on", "off"))
+    parser.add_argument("--project-directory", default=".")
     args = parser.parse_args(argv)
+    if args.project_state is not None:
+        try:
+            set_project(args.project_directory, args.project_state == "on")
+        except (OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print("專案 hook 已" + ("開啟；只收錄重新開啟後的內容" if args.project_state == "on" else "停用"))
+        return 0
     if args.client == "codex":
         return codex_main(args.kind, args.consent)
     if args.consent is not None:
@@ -664,6 +788,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     started_ms = args.started_ms or now_ms()
     session = ""
+    hook_input = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    if not allows(hook_fields(hook_input).get("cwd")):
+        log_end(args.event_id, args.kind, "skipped", "project_disabled", started_ms)
+        return 0
     try:
         # the device login only: an old key left in the plugin's options is never read, let alone sent
         site, key = login_bearer(
@@ -674,7 +802,7 @@ def main(argv: list[str] | None = None) -> int:
                 capture_stop(
                     site,
                     key,
-                    sys.stdin.buffer.read().decode("utf-8", errors="replace"),
+                    hook_input,
                     time.monotonic() + max(0, BUDGET_S - (now_ms() - started_ms) / 1000),
                 )
                 log_end(args.event_id, args.kind, "ok", "", started_ms)
@@ -684,7 +812,6 @@ def main(argv: list[str] | None = None) -> int:
                 log_end(args.event_id, args.kind, "miss", "capture_failed", started_ms)
             return 0
         if args.kind == "turn":
-            hook_input = sys.stdin.buffer.read().decode("utf-8", errors="replace")
             session, prompt = typed_turn(hook_input)
             request = turn_request(site, key, session, prompt, load_received(session))
         else:

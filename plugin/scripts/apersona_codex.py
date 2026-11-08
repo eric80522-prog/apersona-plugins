@@ -37,7 +37,7 @@ from apersona_safe import checked_site, private_dir  # noqa: E402
 
 HOOK_NAME = "apersona_hook.py"
 #: what the hook imports from beside itself, copied with it
-HOOK_SIBLINGS = ("apersona_mask.py", "apersona_safe.py", "apersona_login.py")
+HOOK_SIBLINGS = ("apersona_mask.py", "apersona_safe.py", "apersona_login.py", "apersona_projects.py")
 BACKUP_TAG = ".apersona-backup-"
 # (Codex event, hook kind, timeout in seconds, additionalContextLimit in tokens). Codex cuts a hook's additionalContext
 # past about 2,500 tokens by default into a head-and-tail preview (https://developers.openai.com/codex/hooks, read
@@ -288,7 +288,14 @@ def uninstall() -> int:
     return 0
 
 
-def set_switch(on: bool) -> int:
+def set_switch(on: bool, project: str | None = None) -> int:
+    if project is not None:
+        try:
+            load_hook().set_project(project, on)
+        except (OSError, ValueError) as error:
+            raise InstallError(str(error)) from None
+        print("專案 hook 已" + ("開啟；只收錄重新開啟後的內容" if on else "停用"))
+        return 0
     path = data_home() / "apersona.json"
     try:
         write_replacing(path, json.dumps({"on": on}).encode("utf-8"))
@@ -380,7 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     add = commands.add_parser("install", help="裝三個 hook（沒登入就先跑裝置碼登入）")
     add.add_argument("--site", default="", help="只有連自己架的網站才填；預設 https://www.apersonaai.com")
     for name in ("uninstall", "on", "off", "status"):
-        commands.add_parser(name)
+        command = commands.add_parser(name)
+        if name in ("on", "off"):
+            command.add_argument("--project", metavar="DIRECTORY")
     commands.add_parser("consent").add_argument("answer", choices=("yes", "no"))
     args = parser.parse_args(argv)
     reconfigure = getattr(sys.stdout, "reconfigure", None)
@@ -395,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             return set_consent(args.answer)
         if args.command == "status":
             return status()
-        return set_switch(args.command == "on")
+        return set_switch(args.command == "on", args.project)
     except InstallError as e:
         print(str(e), file=sys.stderr)
         return 1

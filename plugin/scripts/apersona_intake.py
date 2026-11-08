@@ -54,6 +54,7 @@ import urllib.request
 import uuid
 from collections.abc import Callable
 from functools import partial
+from io import TextIOWrapper
 from pathlib import Path
 from typing import cast
 
@@ -664,4 +665,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # AI clients consume the CLI's pipes as UTF-8, including on Windows with Python 3.9's legacy locale.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
     raise SystemExit(main())
