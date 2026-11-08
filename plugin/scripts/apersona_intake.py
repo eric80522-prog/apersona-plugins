@@ -534,8 +534,9 @@ def said(answers: list[dict[str, object]], local: dict[str, str], held: list[tup
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，沒有送")
     if agreeable:
         n = sum(1 for f in files if not f.get("reason"))
-        lines.append(PREPARED)
-        lines.append(f"要開始讀，請本人親口說同意：「{question(agreeable, n)}」")
+        lines.append(PREPARED if readable else "同意後只補登完整訊息觀測，不重新讀取、不花額度；不同意不補登。")
+        action = "要開始讀" if readable else "要補登觀測"
+        lines.append(f"{action}，請本人親口說同意：「{question(agreeable, n)}」")
     else:
         lines.append("這次沒有能讀的段落，不用同意。")
     return "\n".join(lines)
@@ -543,8 +544,13 @@ def said(answers: list[dict[str, object]], local: dict[str, str], held: list[tup
 
 def question(agreeable: list[dict[str, object]], n: int) -> str:
     "The one sentence for every batch, made here from the count: on the free extraction when the site says so."
+    metadata = sum(int(cast(int, a.get("metadataParts") or 0)) for a in agreeable)
+    readable = sum(int(cast(int, a.get("readableParts") or 0)) for a in agreeable)
+    if metadata and not readable:
+        return f"補登這 {metadata} 份完整訊息觀測，不重新讀取、不花額度"
     free = all(bool(a.get("free")) or str(a.get("question") or "").startswith("用免費額度") for a in agreeable)
-    return f"用免費額度讀這 {n} 份" if free else f"用你的額度讀這 {n} 份"
+    answer = f"用免費額度讀這 {n} 份" if free else f"用你的額度讀這 {n} 份"
+    return answer + (f"；另補登 {metadata} 份完整訊息觀測，不重讀、不花額度" if metadata else "")
 
 
 def _uploads(work: Path) -> dict[str, object]:
