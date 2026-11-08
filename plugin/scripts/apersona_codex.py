@@ -5,8 +5,8 @@ Claude Code uses the plugin itself.
     python apersona_codex.py uninstall | on | off | status | consent yes|no
 
 Standard library only, on python 3.9 and up. The hook script and what it imports are copied to
-`~/.apersona/codex/bin/` (the commands in Codex's hooks.json carry absolute paths, because Codex gives a hook no plugin
-variables), the site goes to `~/.apersona/codex/config.json`, and our three handlers are merged into
+`~/.apersona/codex/bin/` (this manual-install route uses absolute paths in hooks.json independently of a packaged
+plugin's environment variables), the site goes to `~/.apersona/codex/config.json`, and the handlers are merged into
 `<CODEX_HOME or ~/.codex>/hooks.json` without touching anyone else's. The hooks reach the site with the same device
 login as the Claude Code plugin (`~/.apersona/plugin-credentials.json`): when there is none, install runs it (an
 address and a short code, then it waits for him to press 允許). No key is read or written anywhere.
