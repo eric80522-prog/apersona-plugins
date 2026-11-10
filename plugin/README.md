@@ -13,7 +13,7 @@ Claude Code 的 `PostToolUse` 只從成功、完整的 Apersona recall 工具結
 
 這條接法已以隔離本機服務與 Python 3.9 驗證；Claude Code 真平台的事件格式、更新後掛載與重連仍需實機驗收，不能把本機模擬當作已驗收。事件契約依 [Claude Code hooks 文件](https://code.claude.com/docs/en/hooks)。
 
-Claude.ai／ChatGPT／Grok 這類純連接器（只加遠端 MCP、你的電腦上沒有我們的 hook）：加 `https://www.apersonaai.com/mcp`，登入按允許即可。授權頁預設只給「查詢與回報」；要讓它上傳素材、記下你的更正、改回覆長短設定，在授權頁另外勾「也讓它上傳資料與修改」。沒勾的連接器叫 `upload_files` 這類工具會被擋，回一句白話（`connector_read_only`）說明到網站「設定」頁的「授權裝置與連線」按「開啟…的上傳與修改」；那裡隨時能開或關。本機工具（Claude Code、Codex、Cursor 這類有 hook 的）按允許就是全開，不用勾。這個分別是看登記時的轉址網址（本機位址＝有 hook），不是看工具自稱的名字；這個範圍上線前授權的裝置維持原有權限。
+Claude.ai／ChatGPT／Grok 這類純連接器（只加遠端 MCP、你的電腦上沒有我們的 hook）：加 `https://www.apersonaai.com/mcp`，登入按允許即可。授權頁預設只給「查詢與回報」；要讓它上傳素材、改回覆長短設定，在授權頁另外勾「也讓它上傳資料與修改」。本人更正仍可用 `claim` 記下，不必另開修改權限。沒勾的連接器叫 `upload_files` 這類工具會被擋，回一句白話（`connector_read_only`）說明到網站「設定」頁的「授權裝置與連線」按「開啟…的上傳與修改」；那裡隨時能開或關。本機工具（Claude Code、Codex、Cursor 這類有 hook 的）按允許就是全開，不用勾。這個分別是看登記時的轉址網址（本機位址＝有 hook），不是看工具自稱的名字；這個範圍上線前授權的裝置維持原有權限。
 
 ## 哪些 AI 工具能用到什麼
 
@@ -24,7 +24,8 @@ Apersona 在每個 AI 工具裡能做到的事不一樣，差別只在「我們�
 | Claude Code（裝外掛） | 是 | 是 | 是（要同意） | 是 |
 | Codex CLI（`apersona_codex.py install`） | 是 | 是 | 是（要同意） | hook 不自動收；可經 MCP 回報 |
 | Cursor | 是 | 否（開場包會教 AI 自己叫 recall） | 是（要同意） | 是 |
-| Gemini CLI、Antigravity | 是 | Gemini CLI 是；Antigravity 否 | 否（自己 `send`） | Gemini CLI 是；Antigravity 否 |
+| Gemini CLI（原生包） | skill 呼叫 `opening` | 否 | 不自動收 | 不自動收 |
+| Antigravity（原生包） | hook 指引 AI 呼叫 `opening`，不是已取回開場包 | 每次模型呼叫前提示工具流程 | 不自動收 | 不自動收 |
 | Claude.ai、ChatGPT、Gemini app、grok.com、Grok Bot | 否（AI 要自己叫 `opening`） | 否 | 否 | 開了收錄才有（AI 自己帶你那句與它的回答） |
 
 Cursor、Antigravity 已接進 `apersona_feed.py`（`cursor`、`antigravity` 平台，見下節）；Gemini CLI 只接了 AfterAgent 叫醒送出，SessionStart 與 BeforeAgent 還沒接。沒有 hook 的工具，`opening` 回來的第一行會寫明這段對話少哪幾樣，第二行給一個本段對話識別，AI 之後每次叫工具都帶它當 `conversation_id`。這類工具的 AI 叫 `lookup`、`recall` 時可以在 `owner_words` 帶你那句原話，叫 `answer_citations` 時在 `answer` 帶它的回答：那台裝置開了收錄（`capture_consent`，你授權的 AI 可以自己開，網站裝置頁可撤回）才存成決策前後文，只給決策中心看、不讀進人格；沒開就不存，決策中心那一件只列封包，並寫明「工具查詢與交付結果可查；對話原文與 AI 回答未收錄」。網站「授權裝置與連線」頁同樣標出每台登入的環境與能力。
@@ -38,8 +39,8 @@ Cursor、Antigravity 已接進 `apersona_feed.py`（`cursor`、`antigravity` 平
 | Claude Code | Anthropic | 本機 stdio 轉送 MCP；與 hook 共用裝置登入 | 完整 | 新掛載與 PostToolUse 真平台未驗 |
 | Codex CLI | OpenAI | 遠端 MCP＋OAuth；`apersona_codex.py` hook | 完整（開場與本人字） | AI 回答不自動收；桌面版 hook 尚待實機核對 |
 | Cursor | xAI | 遠端 MCP＋OAuth；`apersona_feed.py --platform cursor` 的 hook（`sessionStart`、`beforeSubmitPrompt`、`stop`） | 完整（收字用 `generation_id` 當輪次識別） | 每輪提示（`beforeSubmitPrompt` 只能擋不能加字，靠開場包教 AI 叫 `recall`）；Cloud Agent 沒有 `sessionStart`；實機未驗 |
-| Antigravity | Google | 遠端 MCP＋OAuth；`apersona_feed.py --platform antigravity` 的 SessionStart hook（`injectSteps`） | 只有開場 | 沒有「本人送出一句」事件、AI 回答在無文件的 transcript，所以不收字；能否直接 `agy plugin import` 本外掛未驗 |
-| Gemini CLI | Google | 遠端 MCP＋OAuth；`apersona_feed.py --platform gemini` 的 AfterAgent | 只有開場的環境，外掛端尚未接開場（目前只叫醒送出本人自己 `send` 的字） | 穩定的人類 turn id；SessionStart、BeforeAgent 接線 |
+| Antigravity | Google | `antigravity/` 原生包：遠端 MCP＋OAuth＋skill | hook 只給工具指引，skill 叫開場 | 真平台安裝、OAuth 與首問待驗；不自動收錄 |
+| Gemini CLI | Google | `gemini/` extension：遠端 MCP＋OAuth＋skill | 無 hook，skill 叫開場 | 真人 OAuth 與首問待驗；不自動收錄 |
 | ChatGPT | OpenAI | 遠端 MCP＋OAuth（Developer mode） | 無 hook | 開場要 AI 叫 `opening` |
 | Grok（grok.com、Grok Build、Grok Bot） | xAI | 遠端 MCP；Grok Build 另有 hook 事件 | 無 hook（Grok Build 的事件沒有本人那句、AI 回覆） | 來源與同意見 `docs/development/plugin_platforms.md`；Grok Bot 的 `redirect_uri`、`client_name` 要正式站實機看 |
 | Claude.ai 網頁／桌面 | Anthropic | 遠端 MCP＋OAuth（連接器） | 無 hook | 開場要 AI 叫 `opening` |
@@ -101,6 +102,35 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 ## 拆掉外掛
 
 `claude plugin uninstall apersona` 之後，先 `/apersona:logout`（或在網站上按「登出這台」），再刪掉 `~/.apersona/plugin-credentials.json`；送資料夾留下的本機工作資料夾在 `~/.apersona/intake/`，不要了一起刪。
+
+## Google：Antigravity 與 Gemini CLI 原生包
+
+`antigravity/` 與 `gemini/` 是兩個獨立安裝根，各自帶遠端 MCP 與接入 skill，不載入上層 Claude hooks，也不需要 API key 或第二次裝置碼登入。Antigravity 另帶只輸出工具指引的 SessionStart／PreInvocation hook，需要可執行的 `python`（Python 3.9 以上）；Gemini 包不需要 Python。先取得公開包並進入外掛目錄：
+
+    git clone https://github.com/eric80522-prog/apersona-plugins.git
+    cd apersona-plugins/plugin
+
+Antigravity 安裝：
+
+    agy plugin validate --strict ./antigravity
+    agy plugin install ./antigravity
+    agy plugin list
+
+在 Customizations → Installed → MCP Servers 找到此外掛的 Apersona 連線，依 Authenticate 流程由本人完成 OAuth。`opening`、`lookup`、`recall` 設成 eager；其他工具依宿主延遲探索。本機沒有 Antigravity，manifest 驗證不能取代真平台安裝驗收。
+
+Gemini CLI 安裝：
+
+    gemini extensions install ./gemini
+    gemini extensions list
+    gemini mcp list
+
+重新啟動 Gemini CLI，於對話內執行 `/mcp auth apersona` 完成 OAuth。若只要手動 MCP、不安裝 extension，替代接法是 `gemini mcp add --transport http apersona https://www.apersonaai.com/mcp`，之後用相同 `/mcp auth apersona`；不要兩條都裝。既有 settings.json 的同名伺服器會優先於 extension，接錯時先核對 `/mcp` 顯示的來源。
+
+兩者首次都可說「用 Apersona 幫我處理這件事」。成功須實際收到 `opening` 封包，接著沿用回傳的 `conversation_id` 呼叫 `lookup`／`recall`，再以來源回答目前任務。需要工作區時才選，授權失效時重新驗證同一連線；只有安裝成功、OAuth 跳轉或空泛回答不算驗收。後續 `recall.received` 只能回報同一連線完整收到的收件識別。
+
+Antigravity 的 SessionStart／PreInvocation 只注入簡短工具呼叫指引，不發網路請求、不讀 transcript、不儲存使用者輸入；不是已取回本人的開場包，也不強制每輪重拿。沒有 Stop handler，因此不攔截停止。Gemini 包沒有 hook。兩包都沒有自動收錄或 AI 回答自動捕捉。Antigravity `lastUserInput` 是最新輸入，`invocationNum` 是模型呼叫次數，不能當穩定的人類輪次；舊 `apersona_feed.py` 適配器不會因安裝原生包而接線。停用或移除請用宿主的外掛管理；Gemini 可用 `gemini extensions disable apersona`／`gemini extensions uninstall apersona`。移除外掛不等於撤銷 OAuth，需在網站「授權裝置與連線」另行撤銷。
+
+格式依 [Antigravity Build Plugins](https://antigravity.google/docs/build-plugins)、[Antigravity MCP](https://antigravity.google/docs/mcp)、[Gemini extension reference](https://geminicli.com/docs/extensions/reference/) 與 [Gemini MCP](https://geminicli.com/docs/tools/mcp-server/)。MCP instructions 的宿主處理不同：Gemini CLI 會加入系統指引；Antigravity 的延遲探索會存 instructions.md，不能據此宣稱每輪自動呼叫；Google ADK 需應用端另外接開場指引，不能當成 Gemini CLI extension。
 
 ## Codex 桌面：原生外掛
 

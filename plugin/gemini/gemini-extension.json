@@ -1,0 +1,10 @@
+{
+  "name": "apersona",
+  "version": "0.1.0",
+  "description": "Use your sourced experiences and preferences with Apersona.",
+  "mcpServers": {
+    "apersona": {
+      "httpUrl": "https://www.apersonaai.com/mcp"
+    }
+  }
+}

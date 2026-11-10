@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "apersona": {
+      "serverUrl": "https://www.apersonaai.com/mcp",
+      "tools": {
+        "opening": {
+          "eager": true
+        },
+        "lookup": {
+          "eager": true
+        },
+        "recall": {
+          "eager": true
+        }
+      }
+    }
+  }
+}

@@ -51,6 +51,12 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
 
 純 MCP 可使用遠端 OAuth；需要開場與每輪提示時，另有隔離安裝腳本與排錯步驟，見 [Codex 接入說明](plugin/README.md)。Codex hook 沒有自動確認 recall 收件的已驗證事件契約；客戶端須沿同一 MCP 憑證回傳 `received`，不能用另一筆裝置登入代確認。
 
+### Antigravity／Gemini CLI
+
+下載本庫後，`plugin/antigravity` 與 `plugin/gemini` 分別是兩家的原生安裝根。都用遠端 MCP 與 OAuth，不用 API key；Antigravity 另有工具呼叫提示 hook，Gemini 使用 extension skill。安裝命令及限制見 [Google 接入說明](plugin/README.md#googleantigravity-與-gemini-cli-原生包)。
+
+已驗 Antigravity manifest schema／hook JSON 契約，以及隔離 Gemini CLI 的 extension、skill 與 MCP 設定載入；尚未完成真人 OAuth 與首問。Gemini 安裝結尾曾出現 Windows libuv assertion，後續 list 命令成功，不能據此宣稱所有環境安裝全綠。
+
 ### 收件確認與驗證範圍
 
 Claude Code 的 PostToolUse 從成功完整的 recall 結果取出伺服器對話識別與收件識別，使用同裝置確認。丟失、錯誤、截斷與未知格式不確認，其他裝置不能代確認。舊版更新後需重新開啟 Claude Code 載入新的 MCP 掛載。已驗證隔離本機 MCP、憑證隔離與 Python 3.9；真 Claude Code 平台更新、事件與重連尚未實機驗收。
