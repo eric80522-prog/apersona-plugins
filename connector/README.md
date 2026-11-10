@@ -8,17 +8,15 @@
 
 認證用 OAuth 2.1，已上線。第一次連時會跳出登入頁，登入後按「允許」即可，不用貼金鑰。
 
-## Claude.ai（網頁）
+## Claude.ai、ChatGPT 與其他遠端 MCP 客戶端
 
-1. 設定 → 連接器 → 新增自訂連接器。
-2. 名稱填 `Apersona`，網址填上面那一行。
-3. 儲存後按「連線」，在跳出的 Apersona 登入頁登入，按「允許」。
+1. 在客戶端新增自訂遠端 MCP，名稱填 `Apersona`，伺服器網址填上面的 `/mcp`。
+2. 認證選 OAuth。Apersona 支援動態用戶端註冊（DCR），不需要自行貼金鑰；按平台流程登入網站，選人格並由本人允許。
+3. 在對話中啟用這個連接器，先請 AI 呼叫 `opening`。之後沿用回覆中的 `conversation_id`；沒有 hook 不會自動開場。
 
-## ChatGPT（網頁）
+實際新增入口與可用範圍依平台版本、工作區權限及安全設定而異。ChatGPT 的官方說明見 [新增自訂 MCP](https://developers.openai.com/api/docs/guides/custom-mcp-server)；建立後仍需安裝並在對話使用，不以建立成功當作首次查詢已完成。
 
-1. 設定 → 連接器（開發者模式或自訂連接器，依你的方案顯示而定）→ 建立。
-2. 名稱填 `Apersona`，MCP 伺服器網址填上面那一行，認證選 OAuth。
-3. 建立後在跳出的 Apersona 登入頁登入，按「允許」。
+遠端 MCP 與本機外掛的裝置登入是獨立授權。收件確認須由取得 recall 回覆的同一憑證，帶該回覆的 `conversation_id` 與 `received`；不能由另一台裝置代確認。這裡列的是服務已支援的協定流程，不代表每個平台皆完成實機驗收。
 
 ## Claude Code
 

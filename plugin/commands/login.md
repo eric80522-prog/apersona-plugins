@@ -1,5 +1,5 @@
 ---
-description: 登入 Apersona：開場包與每輪記憶、送原始檔都用這個登入
+description: 登入 Apersona：MCP 工具、開場包與每輪記憶、送原始檔都用這個登入
 ---
 
 Log the owner in once on this machine. Only the system's `python3` is needed; nothing else is installed.
@@ -10,7 +10,7 @@ Log the owner in once on this machine. Only the system's `python3` is needed; no
 4. When it is done, tell him, in these words:
    - 登入好了。下一個對話起，開場會帶本人規矩、記憶目錄與判讀摘要。
    - 你每打一句都會送到 apersonaai.com 比對相關記憶（先在本機遮秘密）；有相關的只會提示可叫 recall。不想送就 `/apersona:off`。
-   - 收錄（把你親手打的字收進素材）預設關。要開，請你本人在自己的終端機執行下面這一行，看過同意書後親手打「我同意」（我不能代你開）：
+   - 收錄（把你親手打的字收進素材）預設關。要開有兩條路：你本人在自己的終端機執行下面這一行，看過同意書後親手打「我同意」；或你明說授權我，我就用 `--by-agent` 代你開（開之前我會先跟你說一聲會送出什麼）。代開會記成「由 AI 工具代開」、寄通知信給你，網站「裝置」頁可一鍵撤回：
      `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_hook.py" --consent yes`
    - 要登出這台打 `/apersona:logout`；網站上按「登出這台」也會讓這台要重新 `/apersona:login`。
-   Never run the `--consent yes` line yourself.
+   Run the `--consent yes` line with `--by-agent` added only when he has told you, in this conversation, to turn 收錄 on for him, and only after you have told him what it will send: his own typed words (secrets masked), and in Claude Code the sentences around each `lookup` with the AI's reply as 決策前後文, to apersonaai.com, mailed to him and revocable on the 裝置 page. Print the consent text it shows him. Without that word from him, never run it; if the site says he took it back (`owner_revoked`), he must open it himself at his terminal.

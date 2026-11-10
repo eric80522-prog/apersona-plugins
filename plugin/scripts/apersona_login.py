@@ -35,7 +35,15 @@ from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from apersona_safe import checked_site, open_url, private_dir  # noqa: E402
+from apersona_safe import (  # noqa: E402
+    EXIT_FAILED,
+    EXIT_NOT_LOGGED_IN,
+    EXIT_UNFINISHED,
+    checked_site,
+    exit_line,
+    open_url,
+    private_dir,
+)
 
 DEFAULT_SITE = "https://www.apersonaai.com"
 CLIENT_NAME = "Apersona plugin"
@@ -51,7 +59,6 @@ LOCK_STALE_S = 30
 HTTP_TIMEOUT_S = 10
 #: how long one `login` waits for him before it says to run it again
 LOGIN_WAIT_S = 90
-EXIT_NOT_LOGGED_IN = 4
 
 
 class LoginError(Exception):
@@ -366,11 +373,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("login", "status", "refresh", "logout"))
     parser.add_argument("--site", default="")
     args = parser.parse_args(argv)
+    code = _main(args)
+    if code:
+        print(exit_line(code))
+    return code
+
+
+def _main(args: argparse.Namespace) -> int:
     try:
         site = site_of(args.site)
     except LoginError as e:
         print(str(e))
-        return 1
+        return EXIT_FAILED
     if args.command == "logout":
         print(logout(site))
         return 0
@@ -385,10 +399,10 @@ def main(argv: list[str] | None = None) -> int:
         except LoginError as e:
             if args.command == "status" and e.kind == "unreachable":
                 print(f"本機有 {site} 的登入檔，但連不上網站，無法確認是否已在網站撤銷（{e}）")
-                return 1
+                return EXIT_FAILED
             if args.command == "status":
                 print(str(e))
-            return EXIT_NOT_LOGGED_IN if e.kind in ("not_logged_in", "login_ended") else 1
+            return EXIT_NOT_LOGGED_IN if e.kind in ("not_logged_in", "login_ended") else EXIT_FAILED
         if args.command == "status":
             print(f"已登入 {site}")
         return 0
@@ -396,10 +410,10 @@ def main(argv: list[str] | None = None) -> int:
         done = login(site, lambda line: print(line, flush=True))
     except LoginError as e:
         print(str(e))
-        return 1
+        return EXIT_FAILED
     if done:
         print(f"登入好了（{site}）。下一個對話起，開場包與每輪記憶就會帶本人的記憶。")
-    return 0 if done else 2
+    return 0 if done else EXIT_UNFINISHED
 
 
 if __name__ == "__main__":

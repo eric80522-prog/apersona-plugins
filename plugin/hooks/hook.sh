@@ -8,6 +8,7 @@ plugin_data="${CLAUDE_PLUGIN_DATA:-}"
 case "${1:-opening}" in
   turn) kind=turn ;;
   stop) kind=stop ;;
+  receipt) kind=receipt ;;
   *) kind=opening ;;
 esac
 # On from install; only an explicit /apersona:off turns it off.

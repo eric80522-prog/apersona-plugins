@@ -1,6 +1,6 @@
 """開讀前先問的外掛那一半 (cutting, what can be used and pricing are kept once, on the site): the plugin sends his files
 as they are to the site, which cuts them and says what can be read; he says yes once; the site reads them. Nothing
-leaves the machine before he has seen the list and said yes to sending it.
+leaves the machine before he has seen the list and said yes, once, to sending and reading it.
 
 Standard library only, like the hooks: nothing of the product is installed on his machine.
 
@@ -11,7 +11,9 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       上傳前換代號 (`GET /api/intake/settings`, no file in it; when the site cannot be asked, as if on:
                       寧可多遮). His home folder itself, or more than `MAX_ASK_FILES` files, stops here first and asks
                       him (`--large` once he has said yes). The list is kept (`plan.json`) for `send`.
-- `send`              after his yes to the list: those files exactly (one changed since `ask` stops it), with
+- `send [--read]`     after his yes to the list (with `--read`: that one yes is to sending and reading together,
+                      and the read is queued right after the upload, nothing more is asked): those files
+                      exactly (one changed since `ask` stops it), with
                       secrets dropped from every text file on this machine first, and names, phone numbers, emails,
                       ID numbers and addresses swapped for codes only when 上傳前換代號 is on (as it was at `ask`).
                       With codes on, a .docx or .pdf is not sent (its text cannot be masked here), nor a text file
@@ -63,7 +65,15 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_ignore import Walk  # noqa: E402
 from apersona_mask import Masker, redact_json, redact_secrets  # noqa: E402
-from apersona_safe import fenced, open_url, private_dir  # noqa: E402
+from apersona_safe import (  # noqa: E402
+    EXIT_ASK_FIRST,
+    EXIT_PAUSED,
+    EXIT_REFUSED,
+    exit_line,
+    fenced,
+    open_url,
+    private_dir,
+)
 
 FILES_PATH = "/api/intake/files"
 FILES_CONSENT_PATH = "/api/intake/files/consent"
@@ -78,16 +88,13 @@ MAX_FILES = 100
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 32 * 1024 * 1024
 #: the kinds the site reads; the text ones are masked here
-SUFFIXES = frozenset({".md", ".txt", ".docx", ".pdf", ".csv", ".json"})
-TEXT_SUFFIXES = frozenset({".md", ".txt", ".csv", ".json"})
+SUFFIXES = frozenset({".md", ".txt", ".docx", ".pdf", ".csv", ".json", ".jsonl"})
+TEXT_SUFFIXES = frozenset({".md", ".txt", ".csv", ".json", ".jsonl"})
 TIMEOUT_S = 120
 MAX_RETRIES = 3
 BACKOFF_S = (1, 2, 4)
 RETRY_AFTER_MAX_S = 120
 TEMPORARY_ERRORS = ("rate_limited", "unavailable")
-EXIT_REFUSED = 3
-EXIT_PAUSED = 5
-EXIT_ASK_FIRST = 6
 #: more files than this in one `ask` stops to ask him first
 MAX_ASK_FILES = 200
 #: what a text file that is not UTF-8 is tried as, with codes off (Taiwan's older Windows notes)
@@ -345,6 +352,14 @@ def prepared(path: Path, masker: Masker | None, names: list[str]) -> tuple[bytes
                 return json.dumps(redact_json(json.loads(text), mask), ensure_ascii=False).encode("utf-8"), ""
             except ValueError:
                 pass
+        if suffix == ".jsonl":  # one JSON object per line: each line masked as JSON, a line that is not stays text
+            lines: list[str] = []
+            for line in text.split("\n"):
+                try:
+                    lines.append(json.dumps(redact_json(json.loads(line), mask), ensure_ascii=False))
+                except ValueError:
+                    lines.append(mask(line))
+            return "\n".join(lines).encode("utf-8"), ""
         return mask(text).encode("utf-8"), ""
     except Exception:  # noqa: BLE001  whatever went wrong, a file not masked is never sent
         return None, MASK_FAILED_HERE
@@ -448,15 +463,21 @@ def ask(folder: Path, work: Path, large: bool) -> int:
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {walk.left_out} 份，不送")
     lines.append(f"本機工作資料夾：{work}")
     if rows:
-        lines.append("要送這幾份嗎？本人說好，才執行 send。")
+        lines.append(
+            "要把這幾份送上網站，並讓網站接著讀進人格嗎？（讀取先用免費提取額度，用完才用你的額度；"
+            "花費不超過同意上限。）這是唯一要問的一句，之後不會再問。"
+            "本人說好，才執行 send --read；說不要就什麼都不送、不讀。"
+        )
     else:
         lines.append("沒有要送的檔。")
     print("\n".join(lines))
     return 0
 
 
-def send(work: Path, names_file: Path | None, me: list[str]) -> int:
-    "`send`: the files `ask` listed, exactly (masked here as the switch says), and what the site found."
+def send(work: Path, names_file: Path | None, me: list[str], read: bool = False) -> int:
+    """`send`: the files `ask` listed, exactly (masked here as the switch says), and what the site found.
+    With `read` his one yes to `ask`'s sentence covered the read too: the site is told yes for every batch right
+    after the upload, and no second sentence is put to him."""
     site, persona, key = options()
     found = read_json(work / "plan.json")
     plan = cast("dict[str, object]", found) if isinstance(found, dict) else {}
@@ -509,11 +530,19 @@ def send(work: Path, names_file: Path | None, me: list[str]) -> int:
             print(f"上傳第 {i} 批／共 {len(groups)} 批")
         answers.append(patiently(partial(post_files, site, key, persona, group, me), "上傳"))
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
-    print(said(answers, local, held, int(cast(int, plan.get("left_out") or 0))))
+    print(said(answers, local, held, int(cast(int, plan.get("left_out") or 0)), asking=not read))
+    if read and any(a.get("consentSha256") for a in answers):
+        return consent(work, True)
     return 0
 
 
-def said(answers: list[dict[str, object]], local: dict[str, str], held: list[tuple[str, str]], left_out: int) -> str:
+def said(
+    answers: list[dict[str, object]],
+    local: dict[str, str],
+    held: list[tuple[str, str]],
+    left_out: int,
+    asking: bool = True,
+) -> str:
     """What the site found, summed over the batches, each file by its path here, as the site's data; then the
     plugin's own sentence to agree to (never the site's words: what he is asked to say is not up to the site)."""
     files = [cast("dict[str, object]", f) for a in answers for f in cast("list[object]", a.get("files") or [])]
@@ -542,7 +571,9 @@ def said(answers: list[dict[str, object]], local: dict[str, str], held: list[tup
     lines += [f"- 沒送：{path}：{reason}" for path, reason in held]
     if left_out:
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，沒有送")
-    if agreeable:
+    if agreeable and not asking:
+        lines.append("你已經在送出前同意送與讀，不再問第二次。")
+    elif agreeable:
         n = sum(1 for f in files if not f.get("reason"))
         lines.append(PREPARED if readable else "同意後只補登完整訊息觀測，不重新讀取、不花額度；不同意不補登。")
         action = "要開始讀" if readable else "要補登觀測"
@@ -662,6 +693,13 @@ def cancel(work: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    code = _main(argv)
+    if code:
+        print(exit_line(code))
+    return code
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_intake.py")
     parser.add_argument("--folder", type=Path, help="素材資料夾（send、consent、status、cancel 用來找它的工作資料夾）")
     parser.add_argument("--work", type=Path, help="改用別的本機工作資料夾（預設 ~/.apersona/intake/<資料夾雜湊>）")
@@ -671,6 +709,9 @@ def main(argv: list[str] | None = None) -> int:
     asking.add_argument("--large", action="store_true", help="本人確定要送整個家目錄或超過 200 份時才加")
     sending = commands.add_parser("send", help="本人看過清單說好之後：送 ask 列的那些檔上網站切段")
     sending.add_argument("--names-file", type=Path, help="上傳前換代號開著時要換成代號的人名，一行一個")
+    sending.add_argument(
+        "--read", action="store_true", help="本人對 ask 那一句（送與讀）說好：送完直接排進讀取，不再問"
+    )
     sending.add_argument("--me", action="append", default=[], help="聊天匯出檔裡本人的名字或帳號 ID（可多個）")
     answer = commands.add_parser("consent")
     answer.add_argument("answer", choices=("yes", "no"))
@@ -689,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
             assert folder is not None  # the subcommand's own argument
             return ask(folder, work, bool(args.large))
         if args.command == "send":
-            return send(work, args.names_file, list(args.me))
+            return send(work, args.names_file, list(args.me), bool(args.read))
         if args.command == "consent":
             return consent(work, args.answer == "yes")
         if args.command == "status":

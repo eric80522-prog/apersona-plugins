@@ -1,6 +1,16 @@
 {
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" stop", "timeout": 5}]}],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "",
@@ -22,6 +32,18 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" turn",
             "timeout": 5,
             "statusMessage": "正在找相關的記憶…"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(mcp__apersona__recall|mcp__plugin_apersona_apersona__recall)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" receipt",
+            "timeout": 5
           }
         ]
       }

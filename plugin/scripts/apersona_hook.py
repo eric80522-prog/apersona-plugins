@@ -42,9 +42,10 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_mask import redact_secrets  # noqa: E402  (the site's own masking, word for word)
 from apersona_projects import allows, project_path, set_project  # noqa: E402
-from apersona_safe import clean, fenced, open_url  # noqa: E402
+from apersona_safe import EXIT_FAILED, clean, exit_line, fenced, open_url, terminal_input  # noqa: E402
 
-BUDGET_S = 2.2
+#: the hook's own share of the 3 s; `APERSONA_HOOK_BUDGET_S` widens it only where a test runs on a busy machine
+BUDGET_S = float(os.environ.get("APERSONA_HOOK_BUDGET_S") or 2.2)
 #: the most of the site's words one hook puts in front of the model: the opening (as the site's own 8,000) and a turn
 MAX_TEXT = 8_000
 MAX_TURN_TEXT = 300
@@ -54,13 +55,22 @@ OPENING_CUT_NOTICE = "（開場資料未完整交付；本人更正或規矩可�
 OPENING_LATE_NOTICE = "（開場包這次在時限內沒拿到；請先自己呼叫 apersona 的 opening 工具取回，再回答本人。）"
 #: a user row of the transcript that is not his typing: what `!` commands and slash commands put there
 NOT_TYPED = ("<bash-", "<local-command", "<command-")
-CONSENT_TEXT = "同意收錄本人在 Claude Code 新打的字；秘密先遮、可撤回、素材每日合併讀。"
+#: word for word the site's DECISION_CONTEXT_CONSENT (the hook imports nothing of apersona); the site checks the hash
+CONSENT_TEXT = (
+    "同意收錄本人在 Claude Code 新打的字，以及每次查判讀（lookup）前後那一句與 AI 的回覆當決策前後文"
+    "（AI 回覆只給決策中心看、算採用率，不讀進人格）；秘密先遮、可撤回、素材每日合併讀。"
+)
 CONSENT_SHA256 = hashlib.sha256(CONSENT_TEXT.encode()).hexdigest()
+#: the earlier text: a consent given on it keeps sending his typed text, never the AI's replies
+LEGACY_CONSENT_TEXT = "同意收錄本人在 Claude Code 新打的字；秘密先遮、可撤回、素材每日合併讀。"
+LEGACY_CONSENT_SHA256 = hashlib.sha256(LEGACY_CONSENT_TEXT.encode()).hexdigest()
 CODEX_CONSENT_TEXT = "同意收錄本人在 Codex 親自新打的字（codex exec 與子代理不收）；秘密先遮、可撤回、素材每日合併讀。"
 CODEX_CONSENT_SHA256 = hashlib.sha256(CODEX_CONSENT_TEXT.encode()).hexdigest()
 CODEX_INTERACTIVE = frozenset({"cli", "vscode"})
 #: what he types himself, at a terminal, to turn 收錄 on; nothing else does
 CONSENT_PHRASE = "我同意"
+#: how long telling the site about a consent may take (a login trade and one request); the hook's own turns are not held
+CONSENT_REPORT_S = 8.0
 SESSION_META_CAP = 1024 * 1024
 MAX_CAPTURED_TEXT = 100_000
 # The site will not change its mind about these, so a spooled prompt it refused is dropped, not retried.
@@ -100,37 +110,115 @@ def consent(client: str = "claude") -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     record = cast("dict[str, object]", value)
-    wanted = CODEX_CONSENT_SHA256 if client == "codex" else CONSENT_SHA256
-    return record if record.get("on") is True and record.get("sha256") == wanted else {}
+    wanted = (CODEX_CONSENT_SHA256,) if client == "codex" else (CONSENT_SHA256, LEGACY_CONSENT_SHA256)
+    return record if record.get("on") is True and record.get("sha256") in wanted else {}
 
 
-def write_consent(client: str, on: bool) -> None:
-    "Record his answer (the consent text's hash and when); a no also drops what Codex spooled."
+def has_context_consent(approval: dict[str, object]) -> bool:
+    "Whether the consent on record is the current text, the only one that lets the AI's replies be sent."
+    return approval.get("sha256") == CONSENT_SHA256
+
+
+def consent_record(client: str, on: bool, by_agent: bool = False) -> dict[str, object]:
+    """What the consent file holds: the answer, the text's hash, when, and (for a yes) who opened it: `owner` he typed
+    the phrase at his terminal, `agent` an AI tool did with his authorization (`--by-agent`), and through which tool."""
+    sha = CODEX_CONSENT_SHA256 if client == "codex" else CONSENT_SHA256
+    record: dict[str, object] = {"on": on, "sha256": sha, "since": datetime.now(timezone.utc).isoformat()}  # noqa: UP017
+    if on:
+        record["by"] = "agent" if by_agent else "owner"
+        record["tool"] = client
+    return record
+
+
+def write_consent(client: str, on: bool, by_agent: bool = False) -> dict[str, object]:
+    "Record his answer (see `consent_record`); a no also drops what Codex spooled. Returns what was written."
     path = consent_path(client)
     path.parent.mkdir(parents=True, exist_ok=True)
-    sha = CODEX_CONSENT_SHA256 if client == "codex" else CONSENT_SHA256
-    record = {"on": on, "sha256": sha, "since": datetime.now(timezone.utc).isoformat()}  # noqa: UP017
+    record = consent_record(client, on, by_agent)
     path.write_text(json.dumps(record), encoding="utf-8")
     data = data_dir(client)
     if not on and client == "codex" and data is not None:
         clear_spool(data)
+    return record
 
 
-def answer_consent(client: str, answer: str) -> int:
-    """`--consent yes|no`. No is recorded at once. Yes only from a person at a terminal (stdin a TTY) who reads the
-    consent text and types CONSENT_PHRASE himself: an agent's command, a pipe or anything written into the
-    conversation cannot turn 收錄 on. 0 when what he asked for is recorded."""
+def report_consent(client: str, record: dict[str, object]) -> str:
+    """Tell the site 收錄 went on or off on this device, so the 裝置頁 shows who opened it (and mails him when an AI
+    tool did) and his 撤回 there can stop the uploads. "" when it is recorded, else the code of why not
+    (`owner_revoked`: he took it back on the website, only he opens it again; `not_configured`: not logged in)."""
+    try:
+        data = data_dir(client)
+        if client == "codex":
+            if data is None:
+                raise MissError("not_configured")
+            hint = codex_config(data)
+        else:
+            hint = os.environ.get("CLAUDE_PLUGIN_OPTION_SITE", "")
+    except MissError as refused:
+        return str(refused)
+    return tell_site(hint, record, client)
+
+
+def tell_site(hint: str, record: dict[str, object], tool: str) -> str:
+    """Post one consent record (`on`, `by`) to the site as `tool`'s, with the device login (`hint` the site it names,
+    "" for the login's own). "" when the site recorded it, else the code of why not; `apersona_feed.py` uses it too."""
+    try:
+        site, key = login_bearer(hint, CONSENT_REPORT_S)
+        payload = {"on": record.get("on") is True, "byAgent": record.get("by") == "agent", "tool": tool}
+        request = urllib.request.Request(
+            site.rstrip("/") + "/api/memory/capture-consent",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+            method="POST",
+        )
+        fetch_json(request, CONSENT_REPORT_S)
+    except MissError as refused:
+        return str(refused)
+    return ""
+
+
+def turn_off_locally(client: str) -> None:
+    "The site refused an upload because he took the 收錄 back there: the consent file goes off, so no next turn sends."
+    write_consent(client, False)
+
+
+def answer_consent(client: str, answer: str, by_agent: bool = False) -> int:
+    """`--consent yes|no`. No is recorded at once (and told to the site, best effort). Yes comes in two ways. He at a
+    terminal (stdin a TTY) reads the consent text and types CONSENT_PHRASE himself: recorded as `owner`. Or, with
+    `--by-agent`, an AI tool he has authorized opens it with no terminal: the consent text is printed in full the same,
+    the site must record it (and mail him) first, and the record says `agent`; a site that cannot be reached, or that
+    he took the 收錄 back on, means it stays off. Anything else (a pipe, no flag) cannot turn 收錄 on. 0 when what was
+    asked for is recorded."""
     if answer == "no":
-        write_consent(client, False)
+        report_consent(client, write_consent(client, False))
         print("收錄已關閉。")
         return 0
-    if not sys.stdin.isatty():
-        print("收錄要本人在自己的終端機打開（不能由 AI 代為執行）。請在終端機執行：")
+    text = CODEX_CONSENT_TEXT if client == "codex" else CONSENT_TEXT
+    if by_agent:
+        print("同意書：" + text)
+        print("以上由 AI 工具代本人開啟（本人已授權）；開啟後會寄通知信給本人，網站「裝置」頁可一鍵撤回。")
+        record = consent_record(client, True, True)
+        refused = report_consent(client, record)
+        if refused:
+            why = (
+                "本人在網站撤回過這台裝置的收錄，要他本人在終端機親手開"
+                if refused == "owner_revoked"
+                else "伺服器沒有記下這次代開（" + refused + "），所以沒有開；登入好之後再試"
+            )
+            print("沒有開啟，收錄維持關閉：" + why)
+            print(exit_line(EXIT_FAILED))
+            return EXIT_FAILED
+        write_consent(client, True, True)
+        print("收錄已開啟（由 AI 工具代開）；隨時可用 --consent no 撤回，本人也能在網站裝置頁撤回。")
+        return 0
+    if not terminal_input():
+        print("收錄要本人在自己的終端機打開；或由本人明說授權的 AI 工具加 --by-agent 代開。本人請在終端機執行：")
         here = f'python3 "{Path(__file__).resolve()}" --consent yes' + (" --client codex" if client == "codex" else "")
         data = os.environ.get("CLAUDE_PLUGIN_DATA", "")
         print(f'  CLAUDE_PLUGIN_DATA="{data}" {here}' if client == "claude" and data else "  " + here)
-        return 1
-    print("同意書：" + (CODEX_CONSENT_TEXT if client == "codex" else CONSENT_TEXT))
+        print(exit_line(EXIT_FAILED))
+        return EXIT_FAILED
+    print("同意書：" + text)
     try:
         typed = input(f"要開，請輸入「{CONSENT_PHRASE}」；其他任何輸入都是不開：").strip()
     except EOFError:
@@ -138,12 +226,27 @@ def answer_consent(client: str, answer: str) -> int:
     except OSError:
         typed = ""
     on = typed == CONSENT_PHRASE
-    write_consent(client, on)
-    print("收錄已開啟；隨時可用 --consent no 撤回。" if on else "沒有開啟，收錄維持關閉。")
-    return 0 if on else 1
+    record = write_consent(client, on)
+    if on:
+        report_consent(client, record)  # best effort: his own yes needs no site to be real
+        print("收錄已開啟；隨時可用 --consent no 撤回。")
+        return 0
+    print("沒有開啟，收錄維持關閉。")
+    print(exit_line(EXIT_FAILED))
+    return EXIT_FAILED
 
 
 def capture_stop(site: str, key: str, hook_input: str, deadline: float) -> None:
+    "Stop's capture; if the site says he took the 收錄 back on the website, the local consent goes off at once."
+    try:
+        send_captured(site, key, hook_input, deadline)
+    except MissError as refused:
+        if str(refused) != "consent_revoked":
+            raise
+        turn_off_locally("claude")
+
+
+def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None:
     "Only user text after explicit consent; retries reuse the transcript message uuid."
     approval = consent()
     if not approval:
@@ -168,7 +271,7 @@ def capture_stop(site: str, key: str, hook_input: str, deadline: float) -> None:
     with Path(transcript).open("rb") as stream:
         stream.seek(0, 2)
         stream.seek(max(0, stream.tell() - 8_000_000))
-        lines = stream.read().decode("utf-8", errors="replace").splitlines()
+        lines = stream.read().decode("utf-8", errors="replace").split("\n")
     for line in lines:
         if time.monotonic() >= deadline or consent() != approval:
             break
@@ -212,7 +315,7 @@ def capture_stop(site: str, key: str, hook_input: str, deadline: float) -> None:
             "turnId": session + ":" + identifier,
             "messageId": identifier,
             "text": content,
-            "consentSha256": CONSENT_SHA256,
+            "consentSha256": approval.get("sha256", CONSENT_SHA256),  # the text he agreed to, new or earlier
         }
         request = urllib.request.Request(
             site.rstrip("/") + "/api/memory/conversation",
@@ -222,8 +325,173 @@ def capture_stop(site: str, key: str, hook_input: str, deadline: float) -> None:
         )
         fetch_text(request, max(0, deadline - time.monotonic()))
         sent.add(identifier)
-        ack.parent.mkdir(parents=True, exist_ok=True)
-        ack.write_text(json.dumps(sorted(sent)), encoding="utf-8")
+        save_ack(ack, sent)
+    # Claude Code only; Codex's rollout carries no tool calls the hook can read, so it sends no 決策前後文.
+    if has_context_consent(approval):
+        capture_decision_context(site, key, fields, lines, approval, since, sent, ack, deadline)
+
+
+def save_ack(ack: Path, sent: set[str]) -> None:
+    "Keep what was sent: user message uuids and `ctx:<turnId>:<role>` keys, in the one list."
+    ack.parent.mkdir(parents=True, exist_ok=True)
+    ack.write_text(json.dumps(sorted(sent)), encoding="utf-8")
+
+
+def transcript_rows(lines: list[str]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(cast("dict[str, object]", row))
+    return rows
+
+
+def content_blocks(row: dict[str, object]) -> list[dict[str, object]]:
+    "The blocks of a row's message content (a plain string is one text block)."
+    message = row.get("message")
+    content = cast("dict[str, object]", message).get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return []
+    return [cast("dict[str, object]", b) for b in cast("list[object]", content) if isinstance(b, dict)]
+
+
+def block_text(blocks: list[dict[str, object]]) -> str:
+    return "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+
+
+def typed_text(row: dict[str, object]) -> str:
+    "What he typed in this row; empty when it is not his typing (the filter of the user-text capture)."
+    if row.get("type") != "user" or row.get("isMeta") or row.get("isCompactSummary"):
+        return ""
+    message = row.get("message")
+    if not isinstance(message, dict) or cast("dict[str, object]", message).get("role") != "user":
+        return ""
+    text = block_text(content_blocks(row))
+    return "" if not text.strip() or text.lstrip().startswith(NOT_TYPED) else text
+
+
+def lookup_call_ids(row: dict[str, object]) -> list[str]:
+    "The ids of the apersona lookup calls an assistant row makes."
+    if row.get("type") != "assistant":
+        return []
+    found: list[str] = []
+    for block in content_blocks(row):
+        name, call = block.get("name"), block.get("id")
+        if block.get("type") == "tool_use" and isinstance(name, str) and isinstance(call, str) and call:
+            if name.endswith("__lookup") and "apersona" in name:
+                found.append(call)
+    return found
+
+
+def receipt_turn(rows: list[dict[str, object]], start: int, call: str) -> tuple[int, str]:
+    "(index of the row holding the call's result, the 交付編號 in it); (-1, '') when there is none."
+    for index in range(start, len(rows)):
+        if rows[index].get("type") != "user":
+            continue
+        for block in content_blocks(rows[index]):
+            if block.get("type") != "tool_result" or block.get("tool_use_id") != call:
+                continue
+            result = block.get("content")
+            if isinstance(result, list):
+                result = block_text(
+                    [cast("dict[str, object]", b) for b in cast("list[object]", result) if isinstance(b, dict)]
+                )
+            found = re.findall(r"交付編號：([\w.:-]+)", result) if isinstance(result, str) else []
+            return index, found[-1].strip() if found else ""
+    return -1, ""
+
+
+def capture_decision_context(
+    site: str,
+    key: str,
+    fields: dict[str, object],
+    lines: list[str],
+    approval: dict[str, object],
+    since: datetime,
+    sent: set[str],
+    ack: Path,
+    deadline: float,
+) -> None:
+    """Around each lookup of the conversation send the sentence that set it off, the AI's reply with the packet and
+    his next sentence, once each. A refusal of the site is remembered when it is final and raised at the end."""
+    rows = transcript_rows(lines)
+
+    def counts(row: dict[str, object]) -> bool:
+        stamp = row.get("timestamp")
+        if not isinstance(stamp, str):
+            return False
+        try:
+            written = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return written.tzinfo is not None and written >= since and allows(fields.get("cwd"), stamp)
+
+    def typed_before(index: int) -> str:
+        for back in range(index - 1, -1, -1):
+            text = typed_text(rows[back])
+            if text:
+                return text if counts(rows[back]) else ""
+        return ""
+
+    def typed_after(index: int) -> str:
+        for ahead in range(index + 1, len(rows)):
+            text = typed_text(rows[ahead])
+            if text:
+                return text if counts(rows[ahead]) else ""
+        return ""
+
+    first_miss: MissError | None = None
+    for index, row in enumerate(rows):
+        if not counts(row):
+            continue
+        for call in lookup_call_ids(row):
+            answered, turn = receipt_turn(rows, index + 1, call)
+            if not turn:
+                continue
+            texts = {"prompt": typed_before(index), "assistant": "", "owner_next": ""}
+            for later in range(answered + 1, len(rows)):
+                reply = block_text(content_blocks(rows[later])) if rows[later].get("type") == "assistant" else ""
+                if reply.strip():
+                    texts["assistant"] = reply if counts(rows[later]) else ""
+                    texts["owner_next"] = typed_after(later)
+                    break
+            for role, text in texts.items():
+                marker = f"ctx:{turn}:{role}"
+                if not text or marker in sent:
+                    continue
+                if time.monotonic() >= deadline or consent() != approval:
+                    if first_miss is not None:
+                        raise first_miss
+                    return
+                payload = {
+                    "turnId": turn,
+                    "role": role,
+                    "text": redact_secrets(text)[:MAX_CAPTURED_TEXT],
+                    "consentSha256": CONSENT_SHA256,
+                }
+                request = urllib.request.Request(
+                    site.rstrip("/") + "/api/memory/decision-context",
+                    data=json.dumps(payload).encode(),
+                    headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    fetch_json(request, max(0, deadline - time.monotonic()))
+                except MissError as refused:
+                    if str(refused) == "consent_revoked":
+                        raise
+                    first_miss = first_miss or refused
+                    if str(refused) not in PERMANENT_REFUSALS:
+                        continue
+                sent.add(marker)
+                save_ack(ack, sent)
+    if first_miss is not None:
+        raise first_miss
 
 
 def login_bearer(site: str, left_s: float) -> tuple[str, str]:
@@ -273,6 +541,117 @@ def turn_request(site: str, key: str, session: str, prompt: str, received: list[
     return urllib.request.Request(site.rstrip("/") + "/api/memory/turn", data=body, headers=headers, method="POST")
 
 
+RECALL_TOOLS = ("mcp__apersona__recall", "mcp__plugin_apersona_apersona__recall")
+
+
+def recall_receipt(content: object) -> tuple[str, str] | None:
+    "A complete reply footer, with the exact server-issued conversation and receipt."
+    if isinstance(content, list) and len(cast("list[object]", content)) == 1:
+        part = cast("list[object]", content)[0]
+        block = cast("dict[str, object]", part) if isinstance(part, dict) else {}
+        content = block.get("text") if block.get("type") == "text" else None
+    if not isinstance(content, str):
+        return None
+    found = re.search(
+        r"(?:^|\n)〔本段對話識別：([^\r\n。]{1,128})。這段對話之後每次叫 Apersona 的工具都帶 "
+        r'conversation_id="([^"\r\n]+)"[^\r\n]*〕\r?\n(?:[ \t]*\r?\n)*'
+        r"收件識別：([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+        r"\r?\n(?:[ \t]*\r?\n)*交付編號：[^\n]+\s*\Z",
+        content,
+    )
+    if not found or found[1] != found[2] or len(found[1].encode("utf-8")) > 128:
+        return None
+    if any(ord(c) < 32 or ord(c) == 127 for c in found[1]):
+        return None
+    return found[1], found[3]
+
+
+def post_tool_receipt(fields: dict[str, object]) -> tuple[str, str] | None:
+    "Only the host's successful recall result; unknown tool response shapes fail closed."
+    if fields.get("hook_event_name") != "PostToolUse" or fields.get("tool_name") not in RECALL_TOOLS:
+        return None
+    if not all(isinstance(fields.get(k), str) and fields.get(k) for k in ("session_id", "tool_use_id")):
+        return None
+    response = fields.get("tool_response")
+    if not isinstance(response, dict):
+        return None
+    result = cast("dict[str, object]", response)
+    if any(result.get(k) or fields.get(k) for k in ("isError", "is_error", "truncated", "is_truncated")):
+        return None
+    return recall_receipt(result.get("content"))
+
+
+def recall_received(fields: dict[str, object], session: str, client: str = "claude") -> list[str]:
+    """ACK only Claude's matching successful recall tool results, never text he or the model wrote.
+
+    Codex's supported rollout reader only verifies session metadata; there is no verified tool-result contract here.
+    Codex and other clients must pass `received` to MCP recall themselves. Hints' old ids are not recall receipts.
+    Read at most 8 MiB, including complete call/result pairs; oversized or incomplete transcripts acknowledge
+    nothing. Send the newest 256 unique receipts per request (the server's technical batch limit); older unacknowledged
+    results remain retryable. Re-sending is safe: the server binds each receipt to this conversation idempotently.
+    """
+    path = fields.get("transcript_path")
+    if client != "claude" or not session or not isinstance(path, str):
+        return []
+    cap = 8 * 1024 * 1024
+    try:
+        with Path(path).open("rb") as stream:
+            raw = stream.read(cap + 1)
+        if len(raw) > cap:
+            return []
+        # A writer may still be appending the final row. Never acknowledge a partial JSON record.
+        # JSONL records end at LF; Unicode separators inside a JSON string are ordinary source text.
+        lines = raw[: raw.rfind(b"\n") + 1].decode("utf-8").split("\n")
+    except OSError:
+        return []
+    except UnicodeError:
+        return []
+    calls: set[str] = set()
+    used: set[str] = set()
+    received: list[str] = []
+    for row in transcript_rows(lines):
+        if row.get("sessionId") != session or row.get("isMeta") or row.get("isCompactSummary"):
+            continue
+        message = row.get("message")
+        if not isinstance(message, dict) or cast("dict[str, object]", message).get("role") != row.get("type"):
+            continue
+        for block in content_blocks(row):
+            call = block.get("id")
+            if row.get("type") == "assistant" and block.get("type") == "tool_use" and isinstance(call, str):
+                if call in used:
+                    calls.discard(call)
+                    continue
+                used.add(call)
+                if block.get("name") in RECALL_TOOLS:
+                    calls.add(call)
+                continue
+            call = block.get("tool_use_id")
+            if (
+                row.get("type") != "user"
+                or block.get("type") != "tool_result"
+                or not isinstance(call, str)
+                or call not in calls
+            ):
+                continue
+            calls.discard(call)
+            if block.get("is_error") or block.get("truncated") or block.get("is_truncated"):
+                continue
+            content = block.get("content")
+            if isinstance(content, list) and len(cast("list[object]", content)) == 1:
+                part = cast("list[object]", content)[0]
+                if isinstance(part, dict):
+                    text_part = cast("dict[str, object]", part)
+                    content = text_part.get("text") if text_part.get("type") == "text" else None
+                else:
+                    content = None
+            if not isinstance(content, str):
+                continue
+            receipt = recall_receipt(content)
+            if receipt and receipt[0] == session and receipt[1] not in received:
+                received.append(receipt[1])
+    return received[-256:]
+
+
 def received_file(session: str, client: str = "claude") -> Path | None:
     "Where the ids of the last turn this conversation got are kept; None without the plugin's data folder."
     data = data_dir(client)
@@ -307,8 +686,27 @@ def save_received(session: str, ids: list[str], client: str = "claude") -> None:
         pass
 
 
-def fetch_text(request: urllib.request.Request, deadline_s: float) -> tuple[str, list[str]]:
-    "The answer's `text`, possibly empty, and its `ids` (none when it has none); anything else is a miss."
+#: the 403 codes the site gives for a 收錄 he took back; they are not a plain `http_403`, which is dropped for good
+CONSENT_REFUSALS = ("consent_revoked", "owner_revoked")
+
+
+def refusal_code(error: urllib.error.HTTPError) -> str:
+    "`http_<status>`, except a 403 whose body names one of CONSENT_REFUSALS: that code."
+    if error.code == 403:
+        try:
+            body = json.loads(error.read().decode("utf-8"))
+        except OSError:  # two clauses: the formatter would drop the parentheses python 3.9 needs
+            return "http_403"
+        except ValueError:
+            return "http_403"
+        named = cast("dict[str, object]", body).get("error") if isinstance(body, dict) else None
+        if named in CONSENT_REFUSALS:
+            return str(named)
+    return f"http_{error.code}"
+
+
+def fetch_json(request: urllib.request.Request, deadline_s: float) -> object:
+    "The answer's JSON body; a refusal, a timeout or a body that is not JSON is a miss."
     if deadline_s <= 0:
         raise MissError("deadline")
     outcome: list[object] = []
@@ -318,7 +716,7 @@ def fetch_text(request: urllib.request.Request, deadline_s: float) -> tuple[str,
             with open_url(request, deadline_s) as response:
                 outcome.append(json.loads(response.read().decode("utf-8")))
         except urllib.error.HTTPError as e:
-            outcome.append(MissError(f"http_{e.code}"))
+            outcome.append(MissError(refusal_code(e)))
         except (urllib.error.URLError, OSError) as e:
             reason = getattr(e, "reason", e)
             # on 3.9 a socket timeout is socket.timeout, which only became TimeoutError in 3.10
@@ -335,6 +733,12 @@ def fetch_text(request: urllib.request.Request, deadline_s: float) -> tuple[str,
     body = outcome[0]
     if isinstance(body, MissError):
         raise body
+    return body
+
+
+def fetch_text(request: urllib.request.Request, deadline_s: float) -> tuple[str, list[str]]:
+    "The answer's `text`, possibly empty, and its `ids` (none when it has none); anything else is a miss."
+    body = fetch_json(request, deadline_s)
     fields = cast("dict[str, object]", body) if isinstance(body, dict) else {}
     text, ids = fields.get("text"), fields.get("ids")
     if not isinstance(text, str):
@@ -426,6 +830,24 @@ def deliver(
             "stdout_utf8_bytes": len(output),
         },
     )
+
+
+def conversation_line(raw: str) -> str:
+    "The plugin's own line telling the model this conversation's identifier ('' without a usable session_id)."
+    session = hook_fields(raw).get("session_id")
+    if not isinstance(session, str):
+        return ""
+    session = "".join(clean(session).split())
+    if not session:
+        return ""
+    return f'本段對話識別：{session}。叫 apersona 的 lookup、recall、opening 時帶 conversation_id="{session}"。\n'
+
+
+def print_conversation_line(raw: str) -> None:
+    line = conversation_line(raw)
+    if line:
+        sys.stdout.buffer.write(line.encode("utf-8"))
+        sys.stdout.flush()
 
 
 def hook_fields(raw: str) -> dict[str, object]:
@@ -564,7 +986,7 @@ def spool_turn(data: Path, session: str, fields: dict[str, object]) -> None:
 
 def read_spool(path: Path) -> list[dict[str, str]]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except OSError:
         return []
     entries: list[dict[str, str]] = []
@@ -679,6 +1101,9 @@ def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadl
                 try:
                     fetch_text(request, max(0, deadline - time.monotonic()))
                 except MissError as refused:
+                    if str(refused) == "consent_revoked":
+                        turn_off_locally("codex")  # also drops the spool
+                        return "ok", "consent_revoked"
                     if str(refused) not in PERMANENT_REFUSALS:
                         raise
                     dropped.append("dropped_" + str(refused))
@@ -715,15 +1140,16 @@ def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadl
     return "ok", ",".join(dropped)
 
 
-def codex_main(kind: str, consent_answer: str | None) -> int:
+def codex_main(kind: str, consent_answer: str | None, by_agent: bool = False) -> int:
     "The same three hooks for Codex: no wrapper script, so this does the switch, the start line and the clock itself."
     started_ms = now_ms()
     data = data_dir("codex")
     if data is None:
         return 0
     if consent_answer is not None:
-        return answer_consent("codex", consent_answer)
-    fields = hook_fields(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+        return answer_consent("codex", consent_answer, by_agent)
+    hook_input = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    fields = hook_fields(hook_input)
     if switched_off(data) or not allows(fields.get("cwd")):
         return 0
     event_id = f"ev-{started_ms}-{os.getpid()}-{os.urandom(2).hex()}"
@@ -731,10 +1157,15 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
         return 0
     session, note = "", ""
     try:
-        site, key = login_bearer(codex_config(data), BUDGET_S - (now_ms() - started_ms) / 1000)
         if fields.get("agent_id") is not None:
             log_end(event_id, kind, "skipped", "skipped_agent", started_ms, "codex")
             return 0
+        if kind != "stop":
+            source = session_source(fields)
+            if source is not None and source not in CODEX_INTERACTIVE:
+                log_end(event_id, kind, "skipped", "skipped_" + source, started_ms, "codex")
+                return 0
+        site, key = login_bearer(codex_config(data), BUDGET_S - (now_ms() - started_ms) / 1000)
         if kind == "stop":
             deadline = time.monotonic() + max(0, BUDGET_S - (now_ms() - started_ms) / 1000)
             try:
@@ -742,10 +1173,6 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
             except OSError:
                 result, error = "miss", "capture_failed"
             log_end(event_id, kind, result, error, started_ms, "codex")
-            return 0
-        source = session_source(fields)
-        if source is not None and source not in CODEX_INTERACTIVE:
-            log_end(event_id, kind, "skipped", "skipped_" + source, started_ms, "codex")
             return 0
         if kind == "turn":
             given_session, prompt = fields.get("session_id"), fields.get("prompt")
@@ -757,7 +1184,7 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
                     spool_turn(data, session, fields)
                 except OSError:
                     note = "spool_failed"
-            request = turn_request(site, key, session, prompt, load_received(session, "codex"))
+            request = turn_request(site, key, session, prompt, recall_received(fields, session, "codex"))
         else:
             request = opening_request(site, key)
         text, ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
@@ -765,15 +1192,24 @@ def codex_main(kind: str, consent_answer: str | None) -> int:
             raise MissError("bad_response")
     except MissError as e:
         miss(event_id, kind, e, started_ms, "codex")
+        if kind == "opening":
+            print_conversation_line(hook_input)
         return 0
     deliver(text, ids, session, kind, event_id, started_ms, "codex", note)
+    if kind == "opening":
+        print_conversation_line(hook_input)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_hook.py")
-    parser.add_argument("--kind", choices=("opening", "turn", "stop"), default="opening")
+    parser.add_argument("--kind", choices=("opening", "turn", "stop", "receipt"), default="opening")
     parser.add_argument("--consent", choices=("yes", "no"), help="本人二選一：同意收錄或不要")
+    parser.add_argument(
+        "--by-agent",
+        action="store_true",
+        help="本人授權的 AI 工具代開收錄（不需終端機；記成由 AI 工具代開、寄通知信給本人）；開之前先跟本人說一聲",
+    )
     parser.add_argument("--event-id", default="")
     parser.add_argument("--started-ms", type=int, default=0)
     parser.add_argument("--client", choices=("claude", "codex"), default="claude")
@@ -785,28 +1221,41 @@ def main(argv: list[str] | None = None) -> int:
             set_project(args.project_directory, args.project_state == "on")
         except (OSError, ValueError) as error:
             print(str(error), file=sys.stderr)
-            return 1
+            print(exit_line(EXIT_FAILED), file=sys.stderr)
+            return EXIT_FAILED
         print("專案 hook 已" + ("開啟；只收錄重新開啟後的內容" if args.project_state == "on" else "停用"))
         return 0
+    if args.client == "codex" and args.kind == "receipt":
+        return 0
     if args.client == "codex":
-        return codex_main(args.kind, args.consent)
+        return codex_main(args.kind, args.consent, args.by_agent)
     if args.consent is not None:
         try:
-            return answer_consent("claude", args.consent)
+            return answer_consent("claude", args.consent, args.by_agent)
         except MissError:
             print("找不到外掛的資料夾（CLAUDE_PLUGIN_DATA）；照 /apersona:login 最後給的那一行執行")
-            return 1
+            print(exit_line(EXIT_FAILED))
+            return EXIT_FAILED
     started_ms = args.started_ms or now_ms()
     session = ""
-    hook_input = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    hook_input = sys.stdin.buffer.read(8 * 1024 * 1024 + 1).decode("utf-8", errors="replace")
     if not allows(hook_fields(hook_input).get("cwd")):
         log_end(args.event_id, args.kind, "skipped", "project_disabled", started_ms)
+        return 0
+    receipt = post_tool_receipt(hook_fields(hook_input)) if args.kind == "receipt" else None
+    if args.kind == "receipt" and (receipt is None or len(hook_input.encode("utf-8")) > 8 * 1024 * 1024):
+        log_end(args.event_id, args.kind, "skipped", "no_receipt", started_ms)
         return 0
     try:
         # the device login only: an old key left in the plugin's options is never read, let alone sent
         site, key = login_bearer(
             os.environ.get("CLAUDE_PLUGIN_OPTION_SITE", ""), BUDGET_S - (now_ms() - started_ms) / 1000
         )
+        if args.kind == "receipt" and receipt is not None:
+            request = turn_request(site, key, receipt[0], "", [receipt[1]])
+            fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
+            log_end(args.event_id, args.kind, "ok", "", started_ms)
+            return 0
         if args.kind == "stop":
             try:
                 capture_stop(
@@ -823,7 +1272,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.kind == "turn":
             session, prompt = typed_turn(hook_input)
-            request = turn_request(site, key, session, prompt, load_received(session))
+            request = turn_request(site, key, session, prompt, recall_received(hook_fields(hook_input), session))
         else:
             request = opening_request(site, key)
         text, ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
@@ -831,8 +1280,12 @@ def main(argv: list[str] | None = None) -> int:
             raise MissError("bad_response")
     except MissError as e:
         miss(args.event_id, args.kind, e, started_ms, "claude")
+        if args.kind == "opening":
+            print_conversation_line(hook_input)
         return 0
     deliver(text, ids, session, args.kind, args.event_id, started_ms, "claude")
+    if args.kind == "opening":
+        print_conversation_line(hook_input)  # outside the fence: the plugin's own words, not the site's
     return 0
 
 

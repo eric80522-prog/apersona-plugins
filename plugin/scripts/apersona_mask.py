@@ -136,18 +136,61 @@ class Masker:
         return found
 
     def mask(self, text: str, names: Sequence[str]) -> str:
-        text = redact_secrets(text)
+        return self.mask_with_ranges(text, names, ())[0]
+
+    def mask_with_ranges(
+        self, text: str, names: Sequence[str], ranges: tuple[tuple[int, int], ...]
+    ) -> tuple[str, tuple[tuple[int, int], ...]]:
+        text, ranges = redact_with_ranges(text, ranges)
         for kind, pattern in PATTERNS:
 
             def coded(match: re.Match[str], kind: str = kind) -> str:
                 self.counts[kind] += 1
                 return self.code(kind, match.group(0))
 
-            text = pattern.sub(coded, text)
-        # Longer names first, so 王大明 is not left as 王 plus the code of 大明.
+            text, ranges = _sub_ranges(pattern, coded, text, ranges)
         for name in sorted({n.strip() for n in names if n.strip()}, key=len, reverse=True):
             hits = text.count(name)
             if hits:
                 self.counts["人名"] += hits
-                text = text.replace(name, self.code("人名", name))
-        return text
+                code = self.code("人名", name)
+                text, ranges = _sub_ranges(re.compile(re.escape(name)), lambda _, value=code: value, text, ranges)
+        return text, ranges
+
+
+def _sub_ranges(
+    pattern: re.Pattern[str],
+    replacement: str | Callable[[re.Match[str]], str],
+    text: str,
+    ranges: tuple[tuple[int, int], ...],
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    "Apply the exact masking substitutions, retaining every overlapping excluded character's replacement."
+    pieces: list[str] = []
+    mapped: list[tuple[int, int]] = []
+    before = after = 0
+    for match in pattern.finditer(text):
+        start, end = match.span()
+        pieces.append(text[before:start])
+        for lo, hi in ranges:
+            a, b = max(lo, before), min(hi, start)
+            if a < b:
+                mapped.append((after + a - before, after + b - before))
+        after += start - before
+        value = replacement(match) if callable(replacement) else match.expand(replacement)
+        pieces.append(value)
+        if value and any(lo < end and start < hi for lo, hi in ranges):
+            mapped.append((after, after + len(value)))
+        after += len(value)
+        before = end
+    pieces.append(text[before:])
+    for lo, hi in ranges:
+        if max(lo, before) < hi:
+            mapped.append((after + max(lo, before) - before, after + hi - before))
+    return "".join(pieces), tuple(sorted(mapped))
+
+
+def redact_with_ranges(text: str, ranges: tuple[tuple[int, int], ...]) -> tuple[str, tuple[tuple[int, int], ...]]:
+    "Redact secrets without losing exclusion ranges when replacement lengths differ."
+    for pattern, replacement in _SECRETS:
+        text, ranges = _sub_ranges(pattern, replacement, text, ranges)
+    return text, ranges

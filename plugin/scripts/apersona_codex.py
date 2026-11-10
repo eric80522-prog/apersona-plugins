@@ -2,7 +2,7 @@
 Claude Code uses the plugin itself.
 
     python apersona_codex.py install [--site URL]
-    python apersona_codex.py uninstall | on | off | status | consent yes|no
+    python apersona_codex.py uninstall | on | off | status | consent yes|no [--by-agent]
 
 Standard library only, on python 3.9 and up. The hook script and what it imports are copied to
 `~/.apersona/codex/bin/` (this manual-install route uses absolute paths in hooks.json independently of a packaged
@@ -33,7 +33,7 @@ from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apersona_login  # noqa: E402
-from apersona_safe import checked_site, private_dir  # noqa: E402
+from apersona_safe import EXIT_FAILED, checked_site, exit_line, private_dir, terminal_input  # noqa: E402
 
 HOOK_NAME = "apersona_hook.py"
 #: what the hook imports from beside itself, copied with it
@@ -239,10 +239,11 @@ def install(site: str) -> int:
         write_replacing(script, source.read_bytes())
         for sibling in HOOK_SIBLINGS:
             write_replacing(script.with_name(sibling), source.with_name(sibling).read_bytes())
-        write_replacing(config_path, config.encode("utf-8"), private=True)
         backup = None
         if not (hooks_path.exists() and hooks_path.read_text(encoding="utf-8-sig") == text):
             backup = write_replacing(hooks_path, text.encode("utf-8"), backup=True)
+        # the config is written last and `status` calls the install done by it: a failure before this line is not 已安裝
+        write_replacing(config_path, config.encode("utf-8"), private=True)
     except OSError as e:
         raise InstallError(f"寫入失敗（{type(e).__name__}：{e}）；hooks 沒有裝好") from None
     print(f"已裝好：{hooks_path}" + (f"（原檔備份在 {backup}）" if backup else ""))
@@ -328,7 +329,8 @@ def status() -> int:
 def record_consent(script: Path, answer: str) -> bool:
     "Have the copied hook write the consent file (its text's hash is the one recorded); True when it did."
     try:
-        load_hook(script).write_consent("codex", answer == "yes")
+        hook = load_hook(script)
+        hook.report_consent("codex", hook.write_consent("codex", answer == "yes"))  # the site's copy: best effort
     except OSError:
         return False
     return True
@@ -340,7 +342,7 @@ def ask_consent(script: Path) -> bool:
     hook = load_hook(script)
     was_on = bool(hook.consent("codex"))
     run_it = f"{quote(sys.executable)} {quote(str(Path(__file__).resolve()))} consent"
-    if not sys.stdin.isatty():
+    if not terminal_input():
         print(
             "收錄現在是開的。要關掉：" + run_it + " no"
             if was_on
@@ -369,10 +371,13 @@ def ask_consent(script: Path) -> bool:
     return True
 
 
-def set_consent(answer: str) -> int:
+def set_consent(answer: str, by_agent: bool = False) -> int:
+    "`consent yes|no`; `--by-agent` is an AI tool he authorized opening it with no terminal (the hook's own rule)."
     script = data_home() / "bin" / HOOK_NAME
     if not script.exists():
         raise InstallError("還沒安裝；先執行 install")
+    if answer == "yes" and by_agent:
+        return int(load_hook(script).answer_consent("codex", "yes", True))
     if answer == "yes":
         return 0 if ask_consent(script) else 1
     if not record_consent(script, "no"):
@@ -390,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
         command = commands.add_parser(name)
         if name in ("on", "off"):
             command.add_argument("--project", metavar="DIRECTORY")
-    commands.add_parser("consent").add_argument("answer", choices=("yes", "no"))
+    ask = commands.add_parser("consent")
+    ask.add_argument("answer", choices=("yes", "no"))
+    ask.add_argument("--by-agent", action="store_true", help="本人授權的 AI 工具代開收錄（不需終端機；先跟本人說一聲）")
     args = parser.parse_args(argv)
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
@@ -401,13 +408,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "uninstall":
             return uninstall()
         if args.command == "consent":
-            return set_consent(args.answer)
+            return set_consent(args.answer, args.by_agent)
         if args.command == "status":
             return status()
         return set_switch(args.command == "on", args.project)
     except InstallError as e:
         print(str(e), file=sys.stderr)
-        return 1
+        print(exit_line(EXIT_FAILED), file=sys.stderr)
+        return EXIT_FAILED
 
 
 if __name__ == "__main__":
