@@ -1,0 +1,15 @@
+{
+  "name": "apersona",
+  "version": "0.1.0",
+  "description": "用本人的經驗、取捨與原話回答正在做的事。",
+  "author": { "name": "eric80522-prog" },
+  "homepage": "https://www.apersonaai.com",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "onboardingSkill": "./skills/apersona/SKILL.md",
+  "interface": {
+    "displayName": "Apersona",
+    "shortDescription": "帶著本人的經驗與取捨，回答正在做的事",
+    "defaultPrompt": ["接上我的 Apersona，用我的經驗幫我處理現在這件事。"]
+  }
+}

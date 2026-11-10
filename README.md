@@ -1,6 +1,6 @@
-# Apersona 連接器與 Claude Code 外掛
+# Apersona 連接器與 Claude Code／Codex 外掛
 
-Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在你正在做的真實任務上。這個庫放兩種接上去的方式。
+Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在你正在做的真實任務上。這個庫提供遠端連接器、Claude Code 外掛與 Codex 原生外掛。
 
 ## 連接器和外掛差在哪
 
@@ -11,7 +11,7 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
 | 適用 | Claude.ai、ChatGPT、Claude Code | Claude Code（Codex 的裝法見外掛說明） |
 | 登入 | OAuth，按「允許」 | Claude Code 的 MCP 與 hook 共用 `/apersona:login` 裝置登入（0.2.3 起） |
 
-連接器只能「被問才答」；外掛會在開場與每輪主動帶記憶。
+上表的 hook 外掛是 Claude Code 版本。Codex 原生包是 skill 加遠端 MCP，由 skill 在任務中取開場與記憶，沒有自動 hook。
 
 ## 安裝
 
@@ -38,7 +38,16 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
 
 裝完後打 `/apersona:login` 登入一次（人格由你授權的那個決定，不用填人格識別碼或金鑰）。詳細見 [plugin/README.md](plugin/README.md)。
 
-### Codex CLI
+### Codex 桌面：原生外掛
+
+    codex plugin marketplace add https://github.com/eric80522-prog/apersona-plugins.git
+    codex plugin add apersona@apersona
+
+回桌面重新載入外掛，選 Apersona 執行 setup，由本人完成一次 OAuth。接著直接問正在做的事，skill 會取開場、查本人經驗並附來源回答。這個 Codex 包不需要 Python／Bash、不載入 Claude hooks、不另做裝置碼登入；沒有每輪自動提示或自動收錄。
+
+已用 Codex 桌面附帶 CLI 在隔離設定驗安裝、啟用及 MCP 載入；真人 OAuth 與首次問題仍須實走。詳細見 [接入說明](plugin/README.md)。
+
+### Codex CLI：手動 MCP 與可選 hook
 
 純 MCP 可使用遠端 OAuth；需要開場與每輪提示時，另有隔離安裝腳本與排錯步驟，見 [Codex 接入說明](plugin/README.md)。Codex hook 沒有自動確認 recall 收件的已驗證事件契約；客戶端須沿同一 MCP 憑證回傳 `received`，不能用另一筆裝置登入代確認。
 

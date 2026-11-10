@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "apersona": {
+      "type": "http",
+      "url": "https://www.apersonaai.com/mcp"
+    }
+  }
+}

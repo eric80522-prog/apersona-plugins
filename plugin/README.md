@@ -102,7 +102,20 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 
 `claude plugin uninstall apersona` 之後，先 `/apersona:logout`（或在網站上按「登出這台」），再刪掉 `~/.apersona/plugin-credentials.json`；送資料夾留下的本機工作資料夾在 `~/.apersona/intake/`，不要了一起刪。
 
-## Codex：先接 MCP，需要自動開場再裝 hook
+## Codex 桌面：原生外掛
+
+`codex/` 是獨立的 Codex 外掛：一個接入 skill 加遠端 MCP，登入一次 OAuth 即可查詢。它不載入 Claude 的 hooks、不需要 Python 或 Bash，也不要求第二次裝置碼登入。安裝後執行外掛的 setup，讓 Codex 接續目前的任務、取得開場並查本人原話；只有安裝或授權成功還不算完成，必須實際取得 `opening` 回覆。
+
+從公開 marketplace 安裝（Codex CLI 與桌面使用同一台的設定）：
+
+    codex plugin marketplace add https://github.com/eric80522-prog/apersona-plugins.git
+    codex plugin add apersona@apersona
+
+回桌面重新載入外掛，選 Apersona 執行 setup；需要認證時由本人完成該連線的 OAuth。對話中說「用 Apersona 幫我處理這件事」即可。若已經手動加過同站 MCP，先確認使用哪一條連線，避免重複安裝與授權。
+
+此包沒有每輪自動提示或自動收錄；開場與查詢由 skill 呼叫 MCP。收件確認使用同一連線的 `recall.received`，不宣稱 Codex 自動 ACK。桌面附帶 CLI 的隔離安裝與真人 OAuth／首問是兩項不同的驗證。
+
+## Codex CLI：手動 MCP 與可選 hook
 
 MCP 負責查人格與記憶；本機 hook 另外負責自動開場與每輪提示。兩者各有自己的登入，任何一邊成功都不能代表另一邊已連上。以下 hook 步驟針對 Codex CLI；桌面版的設定入口、hook 事件與對話來源尚待實機核對，不能直接算成支援。
 
