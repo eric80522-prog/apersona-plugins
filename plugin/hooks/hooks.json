@@ -24,18 +24,6 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" turn",
-            "timeout": 5,
-            "statusMessage": "正在找相關的記憶…"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "^(mcp__apersona__recall|mcp__plugin_apersona_apersona__recall)$",

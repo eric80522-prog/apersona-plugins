@@ -10,7 +10,7 @@ no words at all. Claude and Codex keep their own paths in `apersona_hook.py`; no
     python apersona_feed.py consent --platform P yes|no [--by-agent]
     python apersona_feed.py setup --platform P [--site URL]
 
-What each platform may send is the contract of `docs/development/plugin_platforms.md`:
+What each platform may send:
 
 - The text is only what he sends himself (`send`, at his terminal, after he reads it and types y), with an id he gives
   for the turn. No id is `id_required`, nothing kept, nothing sent: an id is never made from the text, the time or the
@@ -151,14 +151,7 @@ def answer_consent(platform: str, answer: str, by_agent: bool = False) -> int:
         print("以上由 AI 工具代本人開啟（本人已授權）；開啟後會寄通知信給本人，網站「裝置」頁可一鍵撤回。")
         refused = report_consent(platform, {"on": True, "by": "agent"})
         if refused:
-            why = (
-                "本人在網站撤回過這台裝置的收錄，要他本人在終端機親手開"
-                if refused == "owner_revoked"
-                else "伺服器沒有記下這次代開（" + refused + "），所以沒有開；登入好之後再試"
-            )
-            print("沒有開啟，收錄維持關閉：" + why)
-            print(exit_line(EXIT_FAILED))
-            return EXIT_FAILED
+            return hook.report_refused(refused)
         write_consent(platform, True, True)
         print("收錄已開啟（由 AI 工具代開）；隨時可用 consent no 撤回，本人也能在網站裝置頁撤回。")
         return 0

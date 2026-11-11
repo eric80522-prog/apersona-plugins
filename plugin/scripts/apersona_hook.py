@@ -1,5 +1,4 @@
-"""開場包 at SessionStart (`--kind opening`) and 每輪記憶 at UserPromptSubmit (`--kind turn`, the hook's JSON with
-`session_id` and `prompt` on stdin): ask the site and print what it gives for the agent.
+"""開場包 at SessionStart (`--kind opening`): ask the site and print what it gives for the agent.
 
 Standard library only, on whatever python3 the machine has (3.9 and up): the plugin carries no packages. The site is
 reached with the device login (`/apersona:login`, `apersona_login.py`) and nothing else; the site comes from the
@@ -7,16 +6,14 @@ plugin's `site` option or is ours. Of the hook's 3 seconds, counted from when th
 what is left of 2.2 and runs in a daemon thread that is abandoned at the deadline (urllib's timeout bounds each socket
 step, not the whole request). Anything short of a good answer prints nothing; a too-long one is cut and says so, never
 dropped. The log gets the end line (the wrapper wrote the start line): result, error kind and milliseconds, never
-content. A turn with nothing related is `empty`, not a miss.
+content. Claude Code has no per-prompt hook: the model calls recall itself, and the PostToolUse `receipt` hook tells
+the site the reply arrived. Stop captures only explicitly consented new user messages, redacted before transmission,
+and records successful message ids for retries.
 
-A turn gives only a relevance hint; recall tools deliver the source text. Stop captures only explicitly
-consented new user messages, redacted before transmission, and records successful message ids for retries.
-
-`--client codex` is the same three hooks for the Codex CLI. This standalone installer reads the site from
-`~/.apersona/codex/config.json` (the login is the same device login), and the hook writes its own log lines and keeps
-its own clock. Codex's rollout is not a stable format to read, so each typed prompt is spooled at UserPromptSubmit
-(only after consent) and sent at Stop, and only when the rollout's first line says a person typed it (`cli` or
-`vscode`, never `codex exec` or a subagent).
+`--client codex` is the same three hooks for the Codex CLI (its `turn` still asks for a hint), reading the site
+from `~/.apersona/codex/config.json` (same device login) and keeping its own log and clock. Codex's rollout is not a
+stable format to read, so each typed prompt is spooled at UserPromptSubmit (only after consent) and sent at Stop, and
+only when the rollout's first line says a person typed it (`cli` or `vscode`, never `codex exec` or a subagent).
 """
 
 from __future__ import annotations
@@ -53,8 +50,19 @@ CUT_NOTICE = "（資料未完整交付；以下只有前段，未登記為已收
 OPENING_CUT_NOTICE = "（開場資料未完整交付；本人更正或規矩可能缺漏，可用 opening 取回伺服器開場包。）"
 #: what the model is told when the opening did not arrive in time: one line, so it fetches the pack itself
 OPENING_LATE_NOTICE = "（開場包這次在時限內沒拿到；請先自己呼叫 apersona 的 opening 工具取回，再回答本人。）"
-#: a user row of the transcript that is not his typing: what `!` commands and slash commands put there
-NOT_TYPED = ("<bash-", "<local-command", "<command-")
+#: a user row of the transcript that is not his typing: what `!` commands, slash commands and the app itself put there
+NOT_TYPED = (
+    "<bash-",
+    "<local-command",
+    "<command-",
+    "<task-notification",
+    "<side-sessions-event",
+    "<cross-session-message",
+    "<ci-monitor-event",
+    "[Request interrupted",
+)
+#: the app's own notes around his text, in the same row
+REMINDERS = re.compile(r"\s*<system-reminder>.*?</system-reminder>", re.DOTALL)
 #: word for word the site's DECISION_CONTEXT_CONSENT (the hook imports nothing of apersona); the site checks the hash
 CONSENT_TEXT = (
     "同意收錄本人在 Claude Code 新打的字，以及每次查判讀（lookup）前後那一句與 AI 的回覆當決策前後文"
@@ -159,6 +167,18 @@ def report_consent(client: str, record: dict[str, object]) -> str:
     return tell_site(hint, record, client)
 
 
+def report_refused(refused: str) -> int:
+    "Say why 收錄 stayed off when an AI tool tried to open it (`report_consent`'s code); the exit code."
+    why = (
+        "本人在網站撤回過這台裝置的收錄，要他本人在終端機親手開"
+        if refused == "owner_revoked"
+        else "伺服器沒有記下這次代開（" + refused + "），所以沒有開；登入好之後再試"
+    )
+    print("沒有開啟，收錄維持關閉：" + why)
+    print(exit_line(EXIT_FAILED))
+    return EXIT_FAILED
+
+
 def tell_site(hint: str, record: dict[str, object], tool: str) -> str:
     """Post one consent record (`on`, `by`) to the site as `tool`'s, with the device login (`hint` the site it names,
     "" for the login's own). "" when the site recorded it, else the code of why not; `apersona_feed.py` uses it too."""
@@ -200,14 +220,7 @@ def answer_consent(client: str, answer: str, by_agent: bool = False) -> int:
         record = consent_record(client, True, True)
         refused = report_consent(client, record)
         if refused:
-            why = (
-                "本人在網站撤回過這台裝置的收錄，要他本人在終端機親手開"
-                if refused == "owner_revoked"
-                else "伺服器沒有記下這次代開（" + refused + "），所以沒有開；登入好之後再試"
-            )
-            print("沒有開啟，收錄維持關閉：" + why)
-            print(exit_line(EXIT_FAILED))
-            return EXIT_FAILED
+            return report_refused(refused)
         write_consent(client, True, True)
         print("收錄已開啟（由 AI 工具代開）；隨時可用 --consent no 撤回，本人也能在網站裝置頁撤回。")
         return 0
@@ -272,18 +285,14 @@ def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None
         stream.seek(0, 2)
         stream.seek(max(0, stream.tell() - 8_000_000))
         lines = stream.read().decode("utf-8", errors="replace").split("\n")
-    for line in lines:
+    rows = transcript_rows(lines)
+    marked = marks_origin(rows)
+    for row in rows:
         if time.monotonic() >= deadline or consent() != approval:
             break
-        try:
-            row = json.loads(line)
-        except ValueError:
+        content = typed_text(row, marked)
+        if not content or not row.get("uuid"):
             continue
-        if not isinstance(row, dict):
-            continue
-        row = cast("dict[str, object]", row)
-        if row.get("type") != "user" or row.get("isMeta") or row.get("isCompactSummary"):
-            continue  # a compacted conversation's summary is the model's words, not his
         if not isinstance(row.get("timestamp"), str) or row.get("uuid") in sent:
             continue
         try:
@@ -292,23 +301,6 @@ def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None
             continue
         if written.tzinfo is None or written < since or not allows(fields.get("cwd"), str(row["timestamp"])):
             continue
-        message = row.get("message", {})
-        if not isinstance(message, dict):
-            continue
-        message = cast("dict[str, object]", message)
-        if message.get("role") != "user":
-            continue
-        content = message.get("content", "")
-        if isinstance(content, list):
-            content = "\n".join(
-                str(cast("dict[str, object]", block).get("text", ""))
-                for block in cast("list[object]", content)
-                if isinstance(block, dict) and cast("dict[str, object]", block).get("type") == "text"
-            )
-        if not isinstance(content, str) or not content.strip() or not row.get("uuid"):
-            continue
-        if content.lstrip().startswith(NOT_TYPED):
-            continue  # a `!` command's output or a slash command, not his words
         content = redact_secrets(content)
         identifier = str(row["uuid"])
         payload = {
@@ -329,6 +321,131 @@ def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None
     # Claude Code only; Codex's rollout carries no tool calls the hook can read, so it sends no 決策前後文.
     if has_context_consent(approval):
         capture_decision_context(site, key, fields, lines, approval, since, sent, ack, deadline)
+
+
+#: 做完自己接下去: the tail of the AI's last words the site is asked about (its last paragraph is what is judged), the
+#: start of what he typed next, how many conversations' runs are kept, and what tells him 代答 went off by itself
+STAND_IN_SAID_CHARS = 2_000
+STAND_IN_NEXT_CHARS = 400
+STAND_IN_SESSIONS = 20
+STAND_IN_OFF_NOTICE = "Apersona：代答被你推翻的比例過高，已自動關掉代答（開場的規矩照舊）。/apersona:on 重新打開。"
+
+
+def list_left(rows: list[dict[str, object]]) -> tuple[int, str]:
+    """How many items of the AI's task list are not done, and the first of them, replayed from the list tools it called
+    in this conversation: `TodoWrite` (the whole list each time) and the desktop app's `update_plan` (the whole list,
+    or one step forward) with `wrap_up` (closes the step in progress). No list is (0, "")."""
+    items: list[dict[str, object]] = []
+
+    def close_current() -> None:
+        for item in items:
+            if item.get("status") == "in_progress":
+                item["status"] = "completed"
+
+    for row in rows:
+        if row.get("type") != "assistant" or row.get("isSidechain"):
+            continue
+        for block in content_blocks(row):
+            given = block.get("input")
+            if block.get("type") != "tool_use" or not isinstance(given, dict):
+                continue
+            name, call = str(block.get("name", "")), cast("dict[str, object]", given)
+            whole = call.get("todos") if name == "TodoWrite" else call.get("items")
+            if name != "TodoWrite" and not name.endswith(("update_plan", "wrap_up")):
+                continue
+            if name.endswith("wrap_up"):
+                close_current()
+                continue
+            if isinstance(whole, list):
+                items = [dict(cast("dict[str, object]", i)) for i in cast("list[object]", whole) if isinstance(i, dict)]
+            if call.get("advance") is True:
+                close_current()
+                for item in items:
+                    if item.get("status") == "pending":
+                        item["status"] = "in_progress"
+                        break
+            done, start = call.get("done"), call.get("start")
+            numbers = [n for n in cast("list[object]", done) if isinstance(n, int)] if isinstance(done, list) else []
+            for number in numbers:
+                if 1 <= number <= len(items):
+                    items[number - 1]["status"] = "completed"
+            if isinstance(start, int) and 1 <= start <= len(items):
+                items[start - 1]["status"] = "in_progress"
+    left = [item for item in items if item.get("status") != "completed"]
+    return len(left), str(left[0].get("content", "")) if left else ""
+
+
+def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> str:
+    """做完自己接下去: what the Stop hook prints so the AI goes on with the next item, or "" to let it stop
+    and wait for him. The site decides (its one table of major matters; no model); this only sends the end of the AI's
+    last words, how much of its list is left, what he typed after the last answer, and the counts kept in
+    `stand_in.json` (answers in a row for this conversation, answers given, answers he overturned). Off, no list
+    left, no answer in time or anything unreadable is "": the AI waits for him as always."""
+    data = data_dir()
+    said, session, transcript = (fields.get(k) for k in ("last_assistant_message", "session_id", "transcript_path"))
+    if data is None or not isinstance(said, str) or not isinstance(session, str) or not isinstance(transcript, str):
+        return ""
+    path = data / "stand_in.json"
+    try:
+        kept = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        kept = {}
+    except ValueError:
+        kept = {}
+    state = cast("dict[str, object]", kept) if isinstance(kept, dict) else {}
+    if state.get("off") is True or not said.strip():
+        return ""
+    with Path(transcript).open("rb") as stream:
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - 8_000_000))
+        rows = transcript_rows(stream.read().decode("utf-8", errors="replace").split("\n"))
+    left, item = list_left(rows)
+    if not left:
+        return ""
+    marked = marks_origin(rows)
+    typed = [(str(row.get("uuid", "")), text) for row in rows for text in [typed_text(row, marked)] if text]
+    held = state.get("sessions")
+    sessions = cast("dict[str, dict[str, object]]", held) if isinstance(held, dict) else {}
+    mine = sessions.get(session, {})
+    seen = [uuid for uuid, _ in typed]
+    since = typed[seen.index(str(mine["last"])) + 1 :] if mine.get("last") in seen else []
+    run = 0 if since else int(cast("int", mine.get("run", 0)))
+    stood_in, overturned = (int(cast("int", state.get(k, 0))) for k in ("stood_in", "overturned"))
+    ask: dict[str, object] = {
+        "said": redact_secrets(said[-STAND_IN_SAID_CHARS:]),
+        "left": left,
+        "next": redact_secrets(item),
+        "run": run,
+        "stoodIn": stood_in,
+        "overturned": overturned,
+    }
+    if since and mine.get("pending") is True:  # the first thing he typed after the last answer: was it taken back
+        ask["ownerNext"] = redact_secrets(since[0][1][:STAND_IN_NEXT_CHARS])
+    request = urllib.request.Request(
+        site.rstrip("/") + "/api/memory/stand-in",
+        data=json.dumps(ask).encode("utf-8"),
+        headers={"Authorization": "Bearer " + key, "Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    body = fetch_json(request, left_s)
+    reply = cast("dict[str, object]", body) if isinstance(body, dict) else {}
+    verdict, words = reply.get("verdict"), reply.get("text")
+    answered = verdict == "continue" and isinstance(words, str) and words.startswith("〈人格代答")
+    waits = answered or (mine.get("pending") is True and "ownerNext" not in ask)  # an answer he has not typed after
+    mine = cast(
+        "dict[str, object]", {"run": run + 1 if answered else run, "last": seen[-1] if seen else "", "pending": waits}
+    )
+    sessions.pop(session, None)
+    sessions[session] = mine
+    state["sessions"] = dict(list(sessions.items())[-STAND_IN_SESSIONS:])
+    state["stood_in"] = stood_in + (1 if answered else 0)
+    state["overturned"] = overturned + (1 if reply.get("overturned") is True else 0)
+    state["off"] = verdict == "overturned_often"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    if answered:
+        return json.dumps({"decision": "block", "reason": words}, ensure_ascii=False)
+    return json.dumps({"systemMessage": STAND_IN_OFF_NOTICE}, ensure_ascii=False) if state["off"] else ""
 
 
 def save_ack(ack: Path, sent: set[str]) -> None:
@@ -364,15 +481,29 @@ def block_text(blocks: list[dict[str, object]]) -> str:
     return "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
 
 
-def typed_text(row: dict[str, object]) -> str:
-    "What he typed in this row; empty when it is not his typing (the filter of the user-text capture)."
-    if row.get("type") != "user" or row.get("isMeta") or row.get("isCompactSummary"):
+def marks_origin(rows: list[dict[str, object]]) -> bool:
+    "Whether this transcript's app version says who wrote each user row."
+    return any(isinstance(row.get("origin"), dict) for row in rows)
+
+
+def typed_text(row: dict[str, object], marked: bool) -> str:
+    """What he typed in this row; empty when it is not his typing. The one filter of everything that reads his words.
+
+    A compacted conversation's summary, a subagent's prompt, a background task's notice and another session's
+    message are user rows too. Where the app marks the origin (`marked`), only a row it calls human is his.
+    """
+    if row.get("type") != "user" or row.get("isMeta") or row.get("isCompactSummary") or row.get("isSidechain"):
+        return ""
+    origin = row.get("origin")
+    if isinstance(origin, dict) and cast("dict[str, object]", origin).get("kind") != "human":
+        return ""
+    if marked and not isinstance(origin, dict):
         return ""
     message = row.get("message")
     if not isinstance(message, dict) or cast("dict[str, object]", message).get("role") != "user":
         return ""
-    text = block_text(content_blocks(row))
-    return "" if not text.strip() or text.lstrip().startswith(NOT_TYPED) else text
+    text = REMINDERS.sub("", block_text(content_blocks(row))).strip()
+    return "" if text.startswith(NOT_TYPED) else text
 
 
 def lookup_call_ids(row: dict[str, object]) -> list[str]:
@@ -420,6 +551,7 @@ def capture_decision_context(
     """Around each lookup of the conversation send the sentence that set it off, the AI's reply with the packet and
     his next sentence, once each. A refusal of the site is remembered when it is final and raised at the end."""
     rows = transcript_rows(lines)
+    marked = marks_origin(rows)
 
     def counts(row: dict[str, object]) -> bool:
         stamp = row.get("timestamp")
@@ -433,14 +565,14 @@ def capture_decision_context(
 
     def typed_before(index: int) -> str:
         for back in range(index - 1, -1, -1):
-            text = typed_text(rows[back])
+            text = typed_text(rows[back], marked)
             if text:
                 return text if counts(rows[back]) else ""
         return ""
 
     def typed_after(index: int) -> str:
         for ahead in range(index + 1, len(rows)):
-            text = typed_text(rows[ahead])
+            text = typed_text(rows[ahead], marked)
             if text:
                 return text if counts(rows[ahead]) else ""
         return ""
@@ -518,19 +650,6 @@ def opening_request(site: str, key: str) -> urllib.request.Request:
     return urllib.request.Request(url, headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
 
 
-def typed_turn(hook_input: str) -> tuple[str, str]:
-    "The conversation and the prompt from the hook's JSON."
-    try:
-        given = json.loads(hook_input)
-    except ValueError:
-        raise MissError("bad_input") from None
-    fields = cast("dict[str, object]", given) if isinstance(given, dict) else {}
-    session, prompt = fields.get("session_id"), fields.get("prompt")
-    if not isinstance(session, str) or not isinstance(prompt, str):
-        raise MissError("bad_input")
-    return session, prompt
-
-
 def turn_request(site: str, key: str, session: str, prompt: str, received: list[str] | None) -> urllib.request.Request:
     # what he typed leaves the machine with its secrets dropped first, as everything the plugin sends
     fields: dict[str, object] = {"sessionId": session, "prompt": redact_secrets(prompt)}  # the login's persona
@@ -579,111 +698,6 @@ def post_tool_receipt(fields: dict[str, object]) -> tuple[str, str] | None:
     if any(result.get(k) or fields.get(k) for k in ("isError", "is_error", "truncated", "is_truncated")):
         return None
     return recall_receipt(result.get("content"))
-
-
-def recall_received(fields: dict[str, object], session: str, client: str = "claude") -> list[str]:
-    """ACK only Claude's matching successful recall tool results, never text he or the model wrote.
-
-    Codex's supported rollout reader only verifies session metadata; there is no verified tool-result contract here.
-    Codex and other clients must pass `received` to MCP recall themselves. Hints' old ids are not recall receipts.
-    Read at most 8 MiB, including complete call/result pairs; oversized or incomplete transcripts acknowledge
-    nothing. Send the newest 256 unique receipts per request (the server's technical batch limit); older unacknowledged
-    results remain retryable. Re-sending is safe: the server binds each receipt to this conversation idempotently.
-    """
-    path = fields.get("transcript_path")
-    if client != "claude" or not session or not isinstance(path, str):
-        return []
-    cap = 8 * 1024 * 1024
-    try:
-        with Path(path).open("rb") as stream:
-            raw = stream.read(cap + 1)
-        if len(raw) > cap:
-            return []
-        # A writer may still be appending the final row. Never acknowledge a partial JSON record.
-        # JSONL records end at LF; Unicode separators inside a JSON string are ordinary source text.
-        lines = raw[: raw.rfind(b"\n") + 1].decode("utf-8").split("\n")
-    except OSError:
-        return []
-    except UnicodeError:
-        return []
-    calls: set[str] = set()
-    used: set[str] = set()
-    received: list[str] = []
-    for row in transcript_rows(lines):
-        if row.get("sessionId") != session or row.get("isMeta") or row.get("isCompactSummary"):
-            continue
-        message = row.get("message")
-        if not isinstance(message, dict) or cast("dict[str, object]", message).get("role") != row.get("type"):
-            continue
-        for block in content_blocks(row):
-            call = block.get("id")
-            if row.get("type") == "assistant" and block.get("type") == "tool_use" and isinstance(call, str):
-                if call in used:
-                    calls.discard(call)
-                    continue
-                used.add(call)
-                if block.get("name") in RECALL_TOOLS:
-                    calls.add(call)
-                continue
-            call = block.get("tool_use_id")
-            if (
-                row.get("type") != "user"
-                or block.get("type") != "tool_result"
-                or not isinstance(call, str)
-                or call not in calls
-            ):
-                continue
-            calls.discard(call)
-            if block.get("is_error") or block.get("truncated") or block.get("is_truncated"):
-                continue
-            content = block.get("content")
-            if isinstance(content, list) and len(cast("list[object]", content)) == 1:
-                part = cast("list[object]", content)[0]
-                if isinstance(part, dict):
-                    text_part = cast("dict[str, object]", part)
-                    content = text_part.get("text") if text_part.get("type") == "text" else None
-                else:
-                    content = None
-            if not isinstance(content, str):
-                continue
-            receipt = recall_receipt(content)
-            if receipt and receipt[0] == session and receipt[1] not in received:
-                received.append(receipt[1])
-    return received[-256:]
-
-
-def received_file(session: str, client: str = "claude") -> Path | None:
-    "Where the ids of the last turn this conversation got are kept; None without the plugin's data folder."
-    data = data_dir(client)
-    if data is None:
-        return None
-    name = hashlib.sha256(session.encode("utf-8")).hexdigest()[:32]
-    return data / "turns" / (name + ".json")
-
-
-def load_received(session: str, client: str = "claude") -> list[str] | None:
-    "The ids the last turn got ([] when none or unreadable); None when they cannot be kept, so none are sent."
-    path = received_file(session, client)
-    if path is None:
-        return None
-    try:
-        ids = json.loads(path.read_text(encoding="utf-8"))
-    except OSError:  # two clauses: the formatter would drop the parentheses python 3.9 needs
-        return []
-    except ValueError:
-        return []
-    return [i for i in cast("list[object]", ids) if isinstance(i, str)] if isinstance(ids, list) else []
-
-
-def save_received(session: str, ids: list[str], client: str = "claude") -> None:
-    path = received_file(session, client)
-    if path is None:
-        return
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(ids), encoding="utf-8")
-    except OSError:
-        pass
 
 
 #: the 403 codes the site gives for a 收錄 he took back; they are not a plain `http_403`, which is dropped for good
@@ -792,17 +806,13 @@ def log_end(
     append_log(row, client)
 
 
-def deliver(
-    text: str, ids: list[str], session: str, kind: str, event_id: str, started_ms: int, client: str, error: str = ""
-) -> None:
+def deliver(text: str, kind: str, event_id: str, started_ms: int, client: str, error: str = "") -> None:
     """Print what the site gave as data: control characters out, cut to MAX_TEXT (a turn to MAX_TURN_TEXT), between
-    the plugin's own two lines; keep the ids of a turn, and log how it went."""
+    the plugin's own two lines, and log how it went."""
     server_chars = len(text)
     text = clean(text).strip()
     cleaned_chars = len(text)
     if not text:
-        if session:
-            save_received(session, [], client)
         log_end(event_id, kind, "empty", error, started_ms, client)
         return
     # UTF-8 bytes, not the console's code page: on a Chinese-locale Windows the default encoding cannot write it all.
@@ -814,8 +824,6 @@ def deliver(
     output = (fenced(text) + "\n").encode("utf-8")
     sys.stdout.buffer.write(output)
     sys.stdout.flush()
-    if session:
-        save_received(session, [] if cut else ids, client)
     log_end(
         event_id,
         kind,
@@ -1155,7 +1163,7 @@ def codex_main(kind: str, consent_answer: str | None, by_agent: bool = False) ->
     event_id = f"ev-{started_ms}-{os.getpid()}-{os.urandom(2).hex()}"
     if not append_log({"event_id": event_id, "kind": kind, "phase": "start", "ts_ms": started_ms}, "codex"):
         return 0
-    session, note = "", ""
+    note = ""
     try:
         if fields.get("agent_id") is not None:
             log_end(event_id, kind, "skipped", "skipped_agent", started_ms, "codex")
@@ -1184,10 +1192,10 @@ def codex_main(kind: str, consent_answer: str | None, by_agent: bool = False) ->
                     spool_turn(data, session, fields)
                 except OSError:
                     note = "spool_failed"
-            request = turn_request(site, key, session, prompt, recall_received(fields, session, "codex"))
+            request = turn_request(site, key, session, prompt, [])
         else:
             request = opening_request(site, key)
-        text, ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
+        text, _ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
         if not text and kind == "opening":
             raise MissError("bad_response")
     except MissError as e:
@@ -1195,7 +1203,7 @@ def codex_main(kind: str, consent_answer: str | None, by_agent: bool = False) ->
         if kind == "opening":
             print_conversation_line(hook_input)
         return 0
-    deliver(text, ids, session, kind, event_id, started_ms, "codex", note)
+    deliver(text, kind, event_id, started_ms, "codex", note)
     if kind == "opening":
         print_conversation_line(hook_input)
     return 0
@@ -1229,6 +1237,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.client == "codex":
         return codex_main(args.kind, args.consent, args.by_agent)
+    if args.kind == "turn":
+        parser.error("Claude Code has no per-prompt hook; --kind turn is for --client codex")
     if args.consent is not None:
         try:
             return answer_consent("claude", args.consent, args.by_agent)
@@ -1237,7 +1247,6 @@ def main(argv: list[str] | None = None) -> int:
             print(exit_line(EXIT_FAILED))
             return EXIT_FAILED
     started_ms = args.started_ms or now_ms()
-    session = ""
     hook_input = sys.stdin.buffer.read(8 * 1024 * 1024 + 1).decode("utf-8", errors="replace")
     if not allows(hook_fields(hook_input).get("cwd")):
         log_end(args.event_id, args.kind, "skipped", "project_disabled", started_ms)
@@ -1257,6 +1266,16 @@ def main(argv: list[str] | None = None) -> int:
             log_end(args.event_id, args.kind, "ok", "", started_ms)
             return 0
         if args.kind == "stop":
+            try:  # 代答 first: it is what he waits on; 收錄 takes what is left of the budget and retries next time
+                line = stand_in(site, key, hook_fields(hook_input), BUDGET_S - (now_ms() - started_ms) / 1000)
+            except MissError:  # separate clauses: the formatter would drop the parentheses python 3.9 needs
+                line = ""
+            except OSError:
+                line = ""
+            except ValueError:
+                line = ""
+            if line:
+                print(line, flush=True)
             try:
                 capture_stop(
                     site,
@@ -1270,12 +1289,8 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 log_end(args.event_id, args.kind, "miss", "capture_failed", started_ms)
             return 0
-        if args.kind == "turn":
-            session, prompt = typed_turn(hook_input)
-            request = turn_request(site, key, session, prompt, recall_received(hook_fields(hook_input), session))
-        else:
-            request = opening_request(site, key)
-        text, ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
+        request = opening_request(site, key)
+        text, _ids = fetch_text(request, BUDGET_S - (now_ms() - started_ms) / 1000)
         if not text and args.kind == "opening":
             raise MissError("bad_response")
     except MissError as e:
@@ -1283,7 +1298,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.kind == "opening":
             print_conversation_line(hook_input)
         return 0
-    deliver(text, ids, session, args.kind, args.event_id, started_ms, "claude")
+    deliver(text, args.kind, args.event_id, started_ms, "claude")
     if args.kind == "opening":
         print_conversation_line(hook_input)  # outside the fence: the plugin's own words, not the site's
     return 0

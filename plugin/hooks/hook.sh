@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# `hook.sh opening` at SessionStart (開場包), `hook.sh turn` at UserPromptSubmit (每輪記憶, the hook's JSON on stdin).
+# `hook.sh opening` at SessionStart (開場包).
 # `hook.sh stop` at Stop (收錄, off until he consents at his own terminal).
 # Never block a prompt, including when logging or the interpreter fails.
 exec 2>/dev/null
 
 plugin_data="${CLAUDE_PLUGIN_DATA:-}"
 case "${1:-opening}" in
-  turn) kind=turn ;;
   stop) kind=stop ;;
   receipt) kind=receipt ;;
   *) kind=opening ;;

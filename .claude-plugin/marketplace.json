@@ -7,7 +7,7 @@
     {
       "name": "apersona",
       "source": "./plugin",
-      "description": "開場帶本人規矩、記憶目錄與判讀摘要；決策點用 MCP 查預註冊的預決策，事後回報結果對照。"
+      "description": "讓你在 Claude Code 少打字：開場就把你的長期規矩交給 AI，AI 做完一段時替你答「繼續做下一項」；需要時用 MCP 查你以前怎麼說、怎麼做。"
     }
   ]
 }

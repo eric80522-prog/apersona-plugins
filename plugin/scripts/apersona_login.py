@@ -363,6 +363,30 @@ def logout(site: str) -> str:
     return (said + "；" if said else "") + "這台的登入檔已刪除"
 
 
+def connection_check(site: str) -> str:
+    """One line on whether the login just saved really works: the 開場包 is asked for once with it, as the next
+    conversation's SessionStart hook will. Never raises, never prints the pack or a token; a miss says what to run."""
+    retry = "登入已存好；等一下執行 /apersona:login 的 status 再確認一次。"
+    try:
+        key = bearer(site)
+    except LoginError as e:
+        return f"接通實測沒過：{e}。{retry}"
+    request = urllib.request.Request(
+        site + "/api/memory/opening", headers={"Authorization": "Bearer " + key, "Accept": "application/json"}
+    )
+    try:
+        with open_url(request, HTTP_TIMEOUT_S) as response:
+            answer: object = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return f"接通實測沒過：網站回 {e.code}，開場包沒拿到。{retry}"
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return f"接通實測沒過：開場包沒拿到（{e}）。{retry}"
+    text = cast("dict[str, object]", answer).get("text") if isinstance(answer, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return "接通實測：連得上網站，但這個人格的開場包是空的；先用 /apersona:read 送資料。"
+    return f"接通實測通過：剛用這台的登入向網站要了一次開場包，拿到 {len(text)} 個字。"
+
+
 def logged_in(site: str) -> bool:
     record = read_credentials()
     return record.get("site") == site and isinstance(record.get("refresh"), str)
@@ -412,7 +436,9 @@ def _main(args: argparse.Namespace) -> int:
         print(str(e))
         return EXIT_FAILED
     if done:
-        print(f"登入好了（{site}）。下一個對話起，開場包與每輪記憶就會帶本人的記憶。")
+        print(f"登入好了（{site}）。下一個對話起，開場包就會帶本人的記憶。")
+        print(f"這台只多了一個檔：{credentials_path()}；/apersona:logout 會刪掉它並在網站登出這台。")
+        print(connection_check(site))
     return 0 if done else EXIT_UNFINISHED
 
 

@@ -88,8 +88,8 @@ MAX_FILES = 100
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 32 * 1024 * 1024
 #: the kinds the site reads; the text ones are masked here
-SUFFIXES = frozenset({".md", ".txt", ".docx", ".pdf", ".csv", ".json", ".jsonl"})
-TEXT_SUFFIXES = frozenset({".md", ".txt", ".csv", ".json", ".jsonl"})
+SUFFIXES = frozenset({".md", ".txt", ".docx", ".pdf", ".csv", ".json", ".jsonl", ".mbox", ".eml"})
+TEXT_SUFFIXES = frozenset({".md", ".txt", ".csv", ".json", ".jsonl", ".mbox", ".eml"})
 TIMEOUT_S = 120
 MAX_RETRIES = 3
 BACKOFF_S = (1, 2, 4)

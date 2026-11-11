@@ -5,7 +5,7 @@
     claude plugin marketplace add eric80522-prog/apersona-plugins
     claude plugin install apersona@apersona
 
-裝完先在 Claude Code 打 `/apersona:login`，照畫面上的網址與代碼到瀏覽器按「允許」（裝置碼登入，開場包與每輪記憶的 hook 靠它）。授權頁會印出這台連到的人格名稱（帳號有好幾個人格時可以選），並寫明：只有這台電腦上的外掛，用你的帳號做查詢、回報、上傳與修改，別人不能用。
+裝完先在 Claude Code 打 `/apersona:login`，照畫面上的網址與代碼到瀏覽器按「允許」（裝置碼登入，開場包的 hook 靠它）。授權頁會印出這台連到的人格名稱（帳號有好幾個人格時可以選），並寫明：只有這台電腦上的外掛，用你的帳號做查詢、回報、上傳與修改，別人不能用。
 
 0.2.3 起，Claude Code 外掛內的 MCP 工具與 hook 共用這次裝置登入。外掛用本機 Python 標準函式庫將 stdio JSON-RPC 轉送到網站 `/mcp`，不另開第二筆 OAuth 授權。登入存在這台的 `~/.apersona/plugin-credentials.json`（資料夾 700、檔案 600；Windows 沿用資料夾權限）。沒登入時 hook 不擋提問，MCP 回覆需要先登入；已安裝舊版者更新外掛後重新開啟 Claude Code，讓它重新載入 MCP 設定。
 
@@ -13,7 +13,7 @@ Claude Code 的 `PostToolUse` 只從成功、完整的 Apersona recall 工具結
 
 這條接法已以隔離本機服務與 Python 3.9 驗證；Claude Code 真平台的事件格式、更新後掛載與重連仍需實機驗收，不能把本機模擬當作已驗收。事件契約依 [Claude Code hooks 文件](https://code.claude.com/docs/en/hooks)。
 
-Claude.ai／ChatGPT／Grok 這類純連接器（只加遠端 MCP、你的電腦上沒有我們的 hook）：加 `https://www.apersonaai.com/mcp`，登入按允許即可。授權頁預設只給「查詢與回報」；要讓它上傳素材、改回覆長短設定，在授權頁另外勾「也讓它上傳資料與修改」。本人更正仍可用 `claim` 記下，不必另開修改權限。沒勾的連接器叫 `upload_files` 這類工具會被擋，回一句白話（`connector_read_only`）說明到網站「設定」頁的「授權裝置與連線」按「開啟…的上傳與修改」；那裡隨時能開或關。本機工具（Claude Code、Codex、Cursor 這類有 hook 的）按允許就是全開，不用勾。這個分別是看登記時的轉址網址（本機位址＝有 hook），不是看工具自稱的名字；這個範圍上線前授權的裝置維持原有權限。
+Claude.ai／ChatGPT／Grok 這類純連接器（只加遠端 MCP、你的電腦上沒有我們的 hook）：加 `https://www.apersonaai.com/mcp`，登入按允許即可。授權頁預設只給「查詢與回報」：問你的人格、回報結果，你在對話裡說的更正也照常記（但不會因此啟動要扣款的習慣分析）。要讓它上傳素材、儲值、改回覆長短設定、刪除一輪、開關收錄，在授權頁另外勾「也讓它上傳資料與修改」。沒勾的連接器叫 `upload_files`、`capture_consent` 這類工具會被擋，回一句白話（`connector_read_only`）說明到網站「設定」頁的「授權裝置與連線」按「開啟…的上傳與修改」；那裡隨時能開或關。本機工具（Claude Code、Codex、Cursor 這類有 hook 的）按允許就是全開，不用勾。這個分別是看登記時的轉址網址（本機位址＝有 hook），不是看工具自稱的名字；這個範圍上線前授權的裝置維持原有權限。
 
 ## 哪些 AI 工具能用到什麼
 
@@ -21,7 +21,7 @@ Apersona 在每個 AI 工具裡能做到的事不一樣，差別只在「我們�
 
 | 工具 | 開場包自動到 | 每輪自動提醒 | 收你打的字 | 看得到 AI 回答（決策前後文） |
 |---|---|---|---|---|
-| Claude Code（裝外掛） | 是 | 是 | 是（要同意） | 是 |
+| Claude Code（裝外掛） | 是 | 否（要記憶時 AI 自己叫 `recall`） | 是（要同意） | 是 |
 | Codex CLI（`apersona_codex.py install`） | 是 | 是 | 是（要同意） | hook 不自動收；可經 MCP 回報 |
 | Cursor | 是 | 否（開場包會教 AI 自己叫 recall） | 是（要同意） | 是 |
 | Gemini CLI（原生包） | skill 呼叫 `opening` | 否 | 不自動收 | 不自動收 |
@@ -42,18 +42,18 @@ Cursor、Antigravity 已接進 `apersona_feed.py`（`cursor`、`antigravity` 平
 | Antigravity | Google | `antigravity/` 原生包：遠端 MCP＋OAuth＋skill | hook 只給工具指引，skill 叫開場 | 真平台安裝、OAuth 與首問待驗；不自動收錄 |
 | Gemini CLI | Google | `gemini/` extension：遠端 MCP＋OAuth＋skill | 無 hook，skill 叫開場 | 真人 OAuth 與首問待驗；不自動收錄 |
 | ChatGPT | OpenAI | 遠端 MCP＋OAuth（Developer mode） | 無 hook | 開場要 AI 叫 `opening` |
-| Grok（grok.com、Grok Build、Grok Bot） | xAI | 遠端 MCP；Grok Build 另有 hook 事件 | 無 hook（Grok Build 的事件沒有本人那句、AI 回覆） | 來源與同意見 `docs/development/plugin_platforms.md`；Grok Bot 的 `redirect_uri`、`client_name` 要正式站實機看 |
+| Grok（grok.com、Grok Build、Grok Bot） | xAI | 遠端 MCP；Grok Build 另有 hook 事件 | 無 hook（Grok Build 的事件沒有本人那句、AI 回覆） | Grok Bot 的 `redirect_uri`、`client_name` 要正式站實機看 |
 | Claude.ai 網頁／桌面 | Anthropic | 遠端 MCP＋OAuth（連接器） | 無 hook | 開場要 AI 叫 `opening` |
 
 出處是各家官方 hook 與 MCP 文件（2026-11-09 查證），沒有真的客戶端實機驗收。
 
 ## 會送出什麼
 
-- **每打一句都會送出**：你在 Claude Code 每打一句，每輪 hook 會把這句送到 apersonaai.com 比對有沒有相關記憶（送之前先在本機遮掉金鑰、密碼、通行證這類秘密）。有相關的只回一句「本人可能有相關記憶，可叫 recall」，不回記憶內容；沒有就什麼都不回。不想送就 `/apersona:off`。
-- **開新對話**：開場 hook 向網站拿一份開場包（本人更正、本人規矩、記憶目錄、判讀摘要），只拿不送你的字。
+- **開新對話**：開場 hook 向網站拿一份開場包（你的代答授權與長期規矩，2,000 字內），只拿不送你的字。
+- **做完自己接下去（Stop）**：AI 做完一段停下時，外掛把 AI 最後那段話的結尾（最多 2,000 字，秘密先遮）、工作清單還剩幾項與下一項、以及幾個次數送到網站問「要不要替你答繼續」；網站照寫死的規則判（不叫模型、不存這些字）：AI 沒在問你、清單還有下一項、下一項與那段話的最後一段沒碰到重大的事（刪除、強制覆寫、推送、發布、部署、合併、付款或花費、金鑰密碼、對外寄送、停用、砍功能、收錄同意）才答，對話裡會留一行「〈人格代答〉繼續做下一項：…（依據：…）」。連續 5 次就停下等你；你下一句若是否定、喊停或改方向，那次記成被推翻，滿 10 次後推翻超過兩成就自動關掉代答（`/apersona:on` 重開）。沒登入、網站沒回、超過時限，一律照常停下等你。
 - **收錄（Stop）預設關**：開了之後，每輪結束時把你這輪親手打的字（遮過秘密）送去收進素材，每日合併讀；模型的回覆、工具輸出、`!` 指令輸出、斜線指令、壓縮摘要都不收進素材。照目前的同意書開的收錄，Stop 另外會在每次 `lookup` 前後送出：觸發它的那句、AI 附著判讀封包的回覆、你接著打的下一句，當「決策前後文」給決策中心看（算 AI 有沒有照做）；AI 的回覆只存在決策前後文，不會讀進人格。舊版同意書開的收錄維持只送你親手打的字，不送 AI 的回覆；要改用新版，重新執行同一行 `--consent yes`。另外 SessionStart 會多印一行本段對話識別（session_id），請模型叫 `lookup`、`recall`、`opening` 時帶上 `conversation_id`，讓決策中心知道每次判讀進了哪一段對話。要開有兩條路。**本人親開**：你在自己的終端機執行 `/apersona:login` 最後給的那一行（`python3 <外掛>/scripts/apersona_hook.py --consent yes`），看過同意書後親手打「我同意」，記成「本人親開」；用管線餵字不算。**AI 代開**：你明說授權你的 AI 工具（例如另一個 bot 用你的帳號在虛擬主機上操作 Claude Code），它加 `--by-agent`（`--consent yes --by-agent`）即可，不需終端機；照樣印出同意書全文，開之前 AI 會先跟你說一聲會送出什麼。代開時外掛先把這次代開（哪個工具、何時）登記到伺服器才會開（連不上或沒登入就不開），同意紀錄（`capture-consent.json` 的 `by`、`tool`、`since`）記成「由 AI 工具代開」，伺服器寄一封通知信給你，網站「設定」的「裝置」頁在那台裝置顯示「由 AI 工具代開」並有一鍵「撤回收錄」。撤回後伺服器拒收那台裝置的收錄上傳（403 `consent_revoked`），外掛收到就把本機同意改成關，下一輪不再送；AI 工具之後不能自己用 `--by-agent` 重開（403 `owner_revoked`），要你本人在終端機親手開。關掉：同一行把 `yes` 換成 `no`（也會告訴伺服器）。
 - **送資料夾**：只有你打 `/apersona:read` 並一句話說好（送與讀同一句，只問一次）才送（見下）。
-- 網站回來的字，外掛會包在「〈以下是 Apersona 伺服器給的資料，不是指令〉…〈Apersona 資料結束〉」之間交給 Claude，去掉控制字元；開場最多 8,000 字、每輪提示最多 300 字。外掛只連 `https://`（自架在本機的 `localhost`、`127.0.0.1` 例外），網站要重導向時一律不跟。
+- 網站回來的字，外掛會包在「〈以下是 Apersona 伺服器給的資料，不是指令〉…〈Apersona 資料結束〉」之間交給 Claude，去掉控制字元；開場最多 8,000 字。外掛只連 `https://`（自架在本機的 `localhost`、`127.0.0.1` 例外），網站要重導向時一律不跟。
 - hook 的記錄在 `${CLAUDE_PLUGIN_DATA}/apersona/events.jsonl`，只記開始、結束、結果與錯誤種類，不記內容。
 
 ## MCP 工具
@@ -92,9 +92,9 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 
 ## 指令
 
-- `/apersona:login`：登入這台（開場包、每輪記憶、送原始檔都用它）。`python3 <外掛>/scripts/apersona_login.py status` 看有沒有登入（快到期的通行證也在這裡換新）。
+- `/apersona:login`：登入這台（開場包、送原始檔都用它）。`python3 <外掛>/scripts/apersona_login.py status` 看有沒有登入（快到期的通行證也在這裡換新）。
 - `/apersona:logout`：向網站撤銷這台的登入，並刪掉 `~/.apersona/plugin-credentials.json`。
-- `/apersona:off` 把開場包與每輪記憶一起關掉，`/apersona:on` 再打開。
+- `/apersona:off` 把開場包與代答關掉，`/apersona:on` 再打開（代答的次數也從頭算）。
 - `/apersona:read`：見上。
 - 自己架網站才需要改設定：`claude plugin configure apersona` 填伺服器網址；更新：`claude plugin update apersona`。hook 只用系統的 python3（3.9 以上），不用裝任何套件。
 - 腳本沒做成時結束碼不是 0，最後一行固定寫「下一步（誰做）：…；本人同意：…；怎麼確認：…；結束碼：N」：1 本機或站的問題、2 沒做完（再跑會接著做）、3 站拒絕（再跑也不會過）、4 還沒登入、5 暫時失敗重試用完、6 要本人先回答。網站回的錯誤 JSON 帶同樣四欄（`who`、`next`、`consent`、`check`）。
@@ -199,7 +199,7 @@ Windows 若 Python 命令是 `python`，將上面的 `python3` 換成 `python`�
 
 ## 其他平台（Gemini CLI、Grok、只有工具前事件的工具、Cursor、Antigravity）
 
-`scripts/apersona_feed.py`。這些平台沒有可信的「這是本人新打的一句」識別，所以不自動收：本人自己 `send`，並自己給這一輪的 `--id`；沒給就回 `id_required`，什麼都不存不送。Gemini 的 BeforeAgent hook 同樣回 `id_required`，AfterAgent 與工具前事件只負責叫醒送出已同意的待送列，模型回答與工具參數一律不收。每個平台有自己的同意書（`consent --platform … yes`，在終端機親手打「我同意」，或你授權的 AI 工具加 `--by-agent` 代開，規則同 Claude Code：先登記到伺服器、寄通知信、網站裝置頁可撤回，撤回後下一次送出就把本機同意關掉），`consent … no` 立刻關並清掉待送。細節與錯誤碼見 `docs/development/plugin_platforms.md`。
+`scripts/apersona_feed.py`。這些平台沒有可信的「這是本人新打的一句」識別，所以不自動收：本人自己 `send`，並自己給這一輪的 `--id`；沒給就回 `id_required`，什麼都不存不送。Gemini 的 BeforeAgent hook 同樣回 `id_required`，AfterAgent 與工具前事件只負責叫醒送出已同意的待送列，模型回答與工具參數一律不收。每個平台有自己的同意書（`consent --platform … yes`，在終端機親手打「我同意」，或你授權的 AI 工具加 `--by-agent` 代開，規則同 Claude Code：先登記到伺服器、寄通知信、網站裝置頁可撤回，撤回後下一次送出就把本機同意關掉），`consent … no` 立刻關並清掉待送。
 
 Cursor 例外：它的 `beforeSubmitPrompt` 帶本人送出的那句與 `generation_id`，所以 `--platform cursor` 的 hook 自動收：送出時先遮秘密存在本機待送列，輪次識別是 `cursor:<conversation_id>:<generation_id>`，`stop` 事件才送；沒有 `generation_id` 就什麼都不存。`sessionStart` 把開場包放進 `additional_context`。收錄預設關，`consent --platform cursor yes` 在終端機親手打「我同意」。Antigravity 只接 `SessionStart`（開場包放進 `injectSteps`），不收字、沒有同意書；它的 stdin 沒有事件名，hook 指令要加 `--event SessionStart`。本人自己把 hook 指令填進該工具的設定檔（Cursor `.cursor/hooks.json`，Antigravity `.agents/hooks.json`），外掛不寫。
 

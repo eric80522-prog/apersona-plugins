@@ -206,6 +206,7 @@ def ensure_login(site: str) -> bool:
         done = False
     if done:
         print(f"登入好了（{site}）")
+        print(apersona_login.connection_check(site))
     else:
         me = f"{quote(sys.executable)} {quote(str(Path(__file__).with_name('apersona_login.py').resolve()))}"
         print(f"還沒登入完；按完允許後執行 {me} login，hook 登入前什麼都不做")

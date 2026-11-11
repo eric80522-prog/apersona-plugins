@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "apersona",
-  "version": "0.2.3",
-  "description": "本人的規矩、記憶目錄與判讀摘要在開場交給你的 agent；決策點用 MCP 查預註冊的預決策，事後回報結果對照。",
+  "version": "0.2.4",
+  "description": "讓你在 Claude Code 少打字：開場就把你的長期規矩交給 AI，AI 做完一段時替你答「繼續做下一項」；需要時用 MCP 查你以前怎麼說、怎麼做。",
   "author": {
     "name": "eric80522-prog"
   },
