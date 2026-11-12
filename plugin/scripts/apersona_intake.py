@@ -609,8 +609,10 @@ def _uploads(work: Path) -> dict[str, object]:
     return record
 
 
-def consent(work: Path, yes: bool) -> int:
-    "`consent yes|no`: his answer to the sentence, for every batch of the last `ask`."
+def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
+    """`consent yes|no|rules`: his answer to the sentence, for every batch of the last `ask`. `rules`: his yes to the
+    site's second sentence (`rulesOnly`, 「只整理成長期規矩，不逐段讀」) for each batch that has one; a batch without it
+    (nothing he said to an AI in it) is left unanswered."""
     site, persona, key = options()
     record = _uploads(work)
     answers = cast("list[dict[str, object]]", record["answers"])
@@ -630,10 +632,16 @@ def consent(work: Path, yes: bool) -> int:
         if not a.get("consentSha256"):
             continue
         body: dict[str, object] = {**who(persona), "jobId": a["jobId"], "consentSha256": a["consentSha256"]}
+        if rules_only:
+            offered = a.get("rulesOnly")
+            if not isinstance(offered, dict):
+                print(f"{a['jobId']}：這批沒有你對 AI 講的話，不能只整理規矩；沒有回答它")
+                continue
+            body |= {"consentSha256": cast("dict[str, object]", offered).get("consentSha256"), "depth": "rules"}
         reply = patiently(partial(post_json, site, FILES_CONSENT_PATH, key, body), "同意")
         if reply.get("message"):
             print(fenced(str(reply["message"])))
-        if reply.get("queued"):
+        if reply.get("queued") or reply.get("rulesOnly"):
             agreed.append(str(a["jobId"]))
     record["consent"] = True
     record["agreed"] = agreed
@@ -714,7 +722,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     sending.add_argument("--me", action="append", default=[], help="聊天匯出檔裡本人的名字或帳號 ID（可多個）")
     answer = commands.add_parser("consent")
-    answer.add_argument("answer", choices=("yes", "no"))
+    answer.add_argument("answer", choices=("yes", "no", "rules"))
     commands.add_parser("status")
     commands.add_parser("cancel")
     args = parser.parse_args(argv)
@@ -732,7 +740,7 @@ def _main(argv: list[str] | None = None) -> int:
         if args.command == "send":
             return send(work, args.names_file, list(args.me), bool(args.read))
         if args.command == "consent":
-            return consent(work, args.answer == "yes")
+            return consent(work, args.answer != "no", args.answer == "rules")
         if args.command == "status":
             return status(work)
         return cancel(work)

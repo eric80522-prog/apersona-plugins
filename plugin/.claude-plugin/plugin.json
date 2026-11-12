@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "apersona",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "讓你在 Claude Code 少打字：開場就把你的長期規矩交給 AI，AI 做完一段時替你答「繼續做下一項」；需要時用 MCP 查你以前怎麼說、怎麼做。",
   "author": {
     "name": "eric80522-prog"
