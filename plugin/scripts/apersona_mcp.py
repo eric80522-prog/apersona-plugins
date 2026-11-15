@@ -88,8 +88,8 @@ def _post(site: str, message: dict[str, object], protocol: str, timeout: float) 
         ):
             raise ValueError("mismatched response")
         return answer
-    except apersona_login.LoginError:
-        return _error(identifier, -32001, "Apersona login unavailable; run /apersona:login, then try again.")
+    except apersona_login.LoginError as error:
+        return _error(identifier, -32001, apersona_login.login_error_message(error))
     except urllib.error.HTTPError as error:
         error.close()
         if error.code == 401:

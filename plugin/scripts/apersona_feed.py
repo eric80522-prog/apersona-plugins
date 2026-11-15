@@ -47,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apersona_hook as hook  # noqa: E402
 from apersona_mask import redact_secrets  # noqa: E402
 from apersona_projects import allows  # noqa: E402
-from apersona_safe import EXIT_FAILED, EXIT_UNFINISHED, exit_line, terminal_input  # noqa: E402
+from apersona_safe import EXIT_FAILED, EXIT_UNFINISHED, exit_line, read_json, terminal_input  # noqa: E402
 
 #: his consent text per platform; the site holds the same words (`memory/conversation.py`) and checks the hash
 CONSENT_TEXTS = {
@@ -92,12 +92,7 @@ def data_dir(platform: str) -> Path:
 
 def consent(platform: str) -> dict[str, object]:
     "His current consent for this platform ({} when off, unreadable or given for another text)."
-    try:
-        value = json.loads((data_dir(platform) / "capture-consent.json").read_text(encoding="utf-8"))
-    except OSError:
-        return {}
-    except ValueError:
-        return {}
+    value = read_json(data_dir(platform) / "capture-consent.json")
     if not isinstance(value, dict):
         return {}
     record = cast("dict[str, object]", value)
@@ -166,9 +161,12 @@ def answer_consent(platform: str, answer: str, by_agent: bool = False) -> int:
         typed = ""
     except OSError:
         typed = ""
-    record = write_consent(platform, typed == hook.CONSENT_PHRASE)
-    if typed == hook.CONSENT_PHRASE:
-        report_consent(platform, record)  # best effort: his own yes needs no site to be real
+    if typed == hook.CONSENT_PHRASE and report_consent(platform, {"on": True, "by": "owner"}) == "owner_revoked":
+        print("沒有開啟，收錄維持關閉：" + hook.SITE_CLOSED)
+        print(exit_line(EXIT_FAILED))
+        return EXIT_FAILED
+    write_consent(platform, typed == hook.CONSENT_PHRASE)
+    if typed == hook.CONSENT_PHRASE:  # told to the site above, best effort: his own yes needs no site to be real
         print("收錄已開啟；隨時可用 consent no 撤回。")
         return 0
     print("沒有開啟，收錄維持關閉。")
@@ -178,14 +176,8 @@ def answer_consent(platform: str, answer: str, by_agent: bool = False) -> int:
 
 def site_of(platform: str) -> str:
     "The site `setup` wrote down, else ''  (the device login's own default)."
-    try:
-        site = json.loads((data_dir(platform) / "config.json").read_text(encoding="utf-8")).get("site")
-    except OSError:
-        return ""
-    except ValueError:
-        return ""
-    except AttributeError:
-        return ""
+    record = read_json(data_dir(platform) / "config.json")
+    site = cast("dict[str, object]", record).get("site") if isinstance(record, dict) else None
     return site if isinstance(site, str) else ""
 
 

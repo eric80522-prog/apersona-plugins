@@ -25,6 +25,10 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       `MAX_FILE_BYTES` not sent); the site keeps them prepared, waiting for his yes, reads nothing and
                       spends nothing. What it found is printed as the site's data (`fenced`), and then the plugin's
                       own sentence to agree to: 「用你的額度讀這 N 份」, on the free extraction 「用免費額度讀這 N 份」.
+                      A part he deleted on the site and sends again is not taken (刪過的內容，這次先不收): the files
+                      are named, with how to take one back.
+- `send --read --take-deleted <path>`  his yes for that file of the list (one flag a file): only those files go,
+                      and the parts of them he deleted are read as new sources.
 - `consent yes|no`    his answer to that sentence. Yes: each batch's yes (`POST /api/intake/files/consent`), and the
                       site queues the read, or says why not (the free extraction used, nothing left to read). No:
                       each batch's no (`POST /api/intake/files/decline`): nothing is read, now or later; the site
@@ -73,6 +77,7 @@ from apersona_safe import (  # noqa: E402
     fenced,
     open_url,
     private_dir,
+    read_json,
 )
 
 FILES_PATH = "/api/intake/files"
@@ -112,15 +117,6 @@ class RefusedError(Exception):
 
 class PausedError(RefusedError):
     "A 暫時 failure that outlasted the retries: run it again later."
-
-
-def read_json(path: Path) -> object:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except OSError:
-        return None
-    except ValueError:  # one exception per clause: the plugin runs on Python 3.9
-        return None
 
 
 def write_json(path: Path, value: object) -> None:
@@ -209,9 +205,15 @@ def multipart(fields: list[tuple[str, str]], files: list[tuple[str, bytes]]) -> 
 
 
 def post_files(
-    site: str, key: Callable[[], str] | str, persona: str, files: list[tuple[str, bytes]], me: list[str]
+    site: str,
+    key: Callable[[], str] | str,
+    persona: str,
+    files: list[tuple[str, bytes]],
+    me: list[str],
+    take: bool = False,
 ) -> dict[str, object]:
-    body, kind = multipart([*who(persona).items(), *(("me", m) for m in me)], files)
+    fields = [*who(persona).items(), *(("me", m) for m in me), *([("takeDeleted", "1")] if take else [])]
+    body, kind = multipart(fields, files)
     request = urllib.request.Request(
         site + FILES_PATH, data=body, headers=_headers(key, **{"Content-Type": kind}), method="POST"
     )
@@ -474,11 +476,24 @@ def ask(folder: Path, work: Path, large: bool) -> int:
     return 0
 
 
-def send(work: Path, names_file: Path | None, me: list[str], read: bool = False) -> int:
-    """`send`: the files `ask` listed, exactly (masked here as the switch says), and what the site found.
-    With `read` his one yes to `ask`'s sentence covered the read too: the site is told yes for every batch right
-    after the upload, and no second sentence is put to him."""
-    site, persona, key = options()
+def _listed(folder: Path, given: str, planned: list[str]) -> str:
+    "One path he named, as `ask` listed it (relative to the folder, or absolute inside it); refused when not listed."
+    path = Path(given)
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(folder.resolve())
+        except ValueError:
+            path = Path(given)
+    relative = path.as_posix()
+    for one in planned:
+        if one.replace("\\", "/") == relative:
+            return one
+    raise RefusedError(f"{given} 不在 ask 列的清單裡；--take-deleted 給的要是清單上的那份檔")
+
+
+def _plan_as_asked(work: Path, site: str, persona: str, key: Callable[[], str] | str) -> tuple[dict[str, object], bool]:
+    """The list `ask` showed him and 「上傳前換代號」 as the site says now; refused when there is no list, when the
+    switch changed since, or when a file on it changed or went away: he is shown the list again before anything goes."""
     found = read_json(work / "plan.json")
     plan = cast("dict[str, object]", found) if isinstance(found, dict) else {}
     if not plan.get("files"):
@@ -487,14 +502,27 @@ def send(work: Path, names_file: Path | None, me: list[str], read: bool = False)
     on = codes_on(site, persona, key)
     if on != plan.get("codes"):
         raise RefusedError("「上傳前換代號」在 ask 之後改了；重跑 ask，再給本人看一次清單")
-    planned = cast("list[dict[str, object]]", plan["files"])
-    for row in planned:
+    for row in cast("list[dict[str, object]]", plan["files"]):
         try:
             same = digest(folder / str(row["path"])) == row["sha256"]
         except OSError:
             same = False
         if not same:
             raise RefusedError(f"{row['path']} 在 ask 之後改過或不見了；重跑 ask，再給本人看一次清單")
+    return plan, on
+
+
+def send(work: Path, names_file: Path | None, me: list[str], read: bool = False, take: list[str] | None = None) -> int:
+    """`send`: the files `ask` listed, exactly (masked here as the switch says), and what the site found.
+    With `read` his one yes to `ask`'s sentence covered the read too: the site is told yes for every batch right
+    after the upload, and no second sentence is put to him. `take` the files of the list he said yes for after the
+    site held parts of them he had deleted: only those go, and those parts are read as new."""
+    if take and not read:
+        raise RefusedError("--take-deleted 要和 --read 一起用：本人說要收回那份，就是同意讀它")
+    site, persona, key = options()
+    plan, on = _plan_as_asked(work, site, persona, key)
+    folder = Path(str(plan["folder"]))
+    planned = cast("list[dict[str, object]]", plan["files"])
     if names_file is None and (work / "names.txt").is_file():
         names_file = work / "names.txt"
     names = []
@@ -504,12 +532,14 @@ def send(work: Path, names_file: Path | None, me: list[str], read: bool = False)
     table = cast("dict[str, object]", stored) if isinstance(stored, dict) else {}
     entries = [(e[0], e[1], e[2]) for e in cast("list[list[str]]", table.get("entries") or []) if len(e) == 3]
     relatives = [str(r["path"]) for r in planned]
+    if take:
+        relatives = list(dict.fromkeys(_listed(folder, t, relatives) for t in take))
     masker: Masker | None = None
     if on:  # a code must not already be in the material, or the way back would be ambiguous
         every = [_text(folder / r) for r in relatives if Path(r).suffix.lower() in TEXT_SUFFIXES]
         masker = Masker(entries, [*every, *names])
     local: dict[str, str] = {}  # the name it goes up under -> its path here
-    held = [(str(h[0]), str(h[1])) for h in cast("list[list[str]]", plan.get("held") or [])]
+    held = [] if take else [(str(h[0]), str(h[1])) for h in cast("list[list[str]]", plan.get("held") or [])]
     sending: list[tuple[str, bytes]] = []
     for relative in relatives:
         data, why = prepared(folder / relative, masker, names)
@@ -528,12 +558,18 @@ def send(work: Path, names_file: Path | None, me: list[str], read: bool = False)
     for i, group in enumerate(groups, 1):
         if len(groups) > 1:
             print(f"上傳第 {i} 批／共 {len(groups)} 批")
-        answers.append(patiently(partial(post_files, site, key, persona, group, me), "上傳"))
+        answers.append(patiently(partial(post_files, site, key, persona, group, me, bool(take)), "上傳"))
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
-    print(said(answers, local, held, int(cast(int, plan.get("left_out") or 0)), asking=not read))
-    if read and any(a.get("consentSha256") for a in answers):
+    left_out = 0 if take else int(cast(int, plan.get("left_out") or 0))
+    print(said(answers, local, held, left_out, asking=not read))
+    if read and _agreeable(answers):
         return consent(work, True)
     return 0
+
+
+def _agreeable(answers: list[dict[str, object]]) -> list[dict[str, object]]:
+    "The batches with a sentence to agree to: not one holding only parts he deleted (nothing in it is read)."
+    return [a for a in answers if a.get("consentSha256") and not a.get("heldOnly")]
 
 
 def said(
@@ -554,10 +590,16 @@ def said(
     found = [f"收到 {len(files)} 份，{readable} 段能讀"]
     if why:
         found[0] += f"，{sum(why.values())} 段讀不了（" + "、".join(f"{k} {n}" for k, n in why.items()) + "）"
+    deleted: list[str] = []
     for f in files:
         name = local.get(str(f.get("name")), "（不明的檔）")
-        found.append(f"- {name}：{f.get('reason') or str(f.get('usable')) + ' 段能讀'}")
-    agreeable = [a for a in answers if a.get("consentSha256")]
+        line = f"- {name}：{f.get('reason') or str(f.get('usable')) + ' 段能讀'}"
+        if f.get("held"):
+            deleted.append(name)
+            if not f.get("reason"):
+                line += f"；其中 {f.get('held')} 段有刪過的內容，這次先不收"
+        found.append(line)
+    agreeable = _agreeable(answers)
     found += [
         str(a.get("estimateWords") or a.get("free")) for a in agreeable[:1] if a.get("estimateWords") or a.get("free")
     ]
@@ -571,6 +613,13 @@ def said(
     lines += [f"- 沒送：{path}：{reason}" for path, reason in held]
     if left_out:
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，沒有送")
+    if deleted:
+        lines.append("這幾份裡有刪過的內容，這次先不收：" + "、".join(deleted))
+        lines.append(
+            '要收回其中哪一份，要本人說出是哪一份、說要收回，才跑 send --read --take-deleted "<那份的路徑>"'
+            "（一份一個 --take-deleted）；那些內容會當成新的來源讀。本人沒說就不收。"
+            "也可以到網站資料頁恢復刪掉的那份來源。"
+        )
     if agreeable and not asking:
         lines.append("你已經在送出前同意送與讀，不再問第二次。")
     elif agreeable:
@@ -628,9 +677,7 @@ def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
         print(fenced(said_last) if said_last else "沒同意：什麼都不讀、不花錢")
         return 0
     agreed: list[str] = []
-    for a in answers:
-        if not a.get("consentSha256"):
-            continue
+    for a in _agreeable(answers):
         body: dict[str, object] = {**who(persona), "jobId": a["jobId"], "consentSha256": a["consentSha256"]}
         if rules_only:
             offered = a.get("rulesOnly")
@@ -721,6 +768,13 @@ def _main(argv: list[str] | None = None) -> int:
         "--read", action="store_true", help="本人對 ask 那一句（送與讀）說好：送完直接排進讀取，不再問"
     )
     sending.add_argument("--me", action="append", default=[], help="聊天匯出檔裡本人的名字或帳號 ID（可多個）")
+    sending.add_argument(
+        "--take-deleted",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="本人說要收回的那份檔（ask 清單上的路徑，一份一個）：只送這幾份，刪過的內容當成新的來源讀；要加 --read",
+    )
     answer = commands.add_parser("consent")
     answer.add_argument("answer", choices=("yes", "no", "rules"))
     commands.add_parser("status")
@@ -738,7 +792,7 @@ def _main(argv: list[str] | None = None) -> int:
             assert folder is not None  # the subcommand's own argument
             return ask(folder, work, bool(args.large))
         if args.command == "send":
-            return send(work, args.names_file, list(args.me), bool(args.read))
+            return send(work, args.names_file, list(args.me), bool(args.read), list(args.take_deleted))
         if args.command == "consent":
             return consent(work, args.answer != "no", args.answer == "rules")
         if args.command == "status":

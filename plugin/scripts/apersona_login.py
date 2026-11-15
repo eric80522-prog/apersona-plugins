@@ -31,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -43,6 +44,7 @@ from apersona_safe import (  # noqa: E402
     exit_line,
     open_url,
     private_dir,
+    read_json,
 )
 
 DEFAULT_SITE = "https://www.apersonaai.com"
@@ -69,17 +71,19 @@ class LoginError(Exception):
         self.kind = kind
 
 
+def login_error_message(error: LoginError) -> str:
+    "Shared client wording; only refresh errors carry a safe, locally generated diagnostic."
+    if error.kind in ("refresh_failed", "token_expiring"):
+        return str(error)
+    return "Apersona login unavailable; run /apersona:login, then try again."
+
+
 def credentials_path() -> Path:
     return Path.home() / ".apersona" / "plugin-credentials.json"
 
 
 def read_credentials() -> dict[str, object]:
-    try:
-        found: object = json.loads(credentials_path().read_text(encoding="utf-8"))
-    except OSError:  # one exception per clause: Python 3.9 and the formatter
-        return {}
-    except ValueError:
-        return {}
+    found = read_json(credentials_path())
     return cast("dict[str, object]", found) if isinstance(found, dict) else {}
 
 
@@ -120,13 +124,13 @@ def _post(
     except urllib.error.HTTPError as e:
         raw, status = e.read(), e.code
     except (urllib.error.URLError, OSError) as e:
-        raise LoginError("unreachable", "連不上網站：" + str(e)) from None
+        raise LoginError("unreachable", "連線錯誤：" + type(getattr(e, "reason", e)).__name__) from None
     try:
         answer: object = json.loads(raw.decode("utf-8")) if raw else {}
     except ValueError:
         answer = {}
     result = cast("dict[str, object]", answer) if isinstance(answer, dict) else {}
-    return {"status": status, **result}
+    return {**result, "status": status}
 
 
 def register(site: str) -> str:
@@ -160,6 +164,7 @@ def _tokens_into(record: dict[str, object], answer: dict[str, object], now: floa
         }
     )
     record.pop("pending", None)
+    record.pop("refresh_failure", None)
 
 
 def login(
@@ -290,6 +295,10 @@ def bearer(
     if left > SKEW_S and not verify:
         return access
     if not trade:
+        failure = record.get("refresh_failure")
+        if isinstance(failure, dict):
+            detail = cast("dict[str, object]", failure)
+            raise LoginError("refresh_failed", f"換新通行證失敗：{detail.get('reason')}（{detail.get('at')}）")
         raise LoginError("token_expiring", "通行證快到期，背景正在換新；下一句就會帶")
     if not isinstance(client_id, str):
         raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
@@ -302,10 +311,25 @@ def bearer(
             raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
         if float(cast("float", record.get("expires_at") or 0)) - clock() > SKEW_S and not verify:
             return access
+        return _refresh_tokens(site, record, timeout_s, clock)
+    finally:
+        try:
+            _lock_path().unlink()
+        except OSError:
+            pass
+
+
+def _refresh_tokens(site: str, record: dict[str, object], timeout_s: float, clock: Callable[[], float]) -> str:
+    "Exchange and persist the pair or its failure while the caller holds the refresh lock."
+    try:
         answer = _post(
             site,
             "/oauth2/token",
-            form={"grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id},
+            form={
+                "grant_type": "refresh_token",
+                "refresh_token": str(record["refresh"]),
+                "client_id": str(record["client_id"]),
+            },
             timeout=timeout_s,
         )
         error = answer.get("error")
@@ -314,15 +338,21 @@ def bearer(
             credentials_path().unlink()
             raise LoginError("login_ended", "這台已被登出；執行 /apersona:login 重新登入")
         if error is not None or answer.get("status") != 200:
-            raise LoginError("refresh_failed", "換通行證失敗（" + str(error or answer.get("status")) + "）")
+            reason = f"伺服器回 {answer.get('status')}"
+            if answer.get("status") == 403:
+                reason += "，可能是網站被存取控管擋住"
+            raise LoginError("refresh_failed", reason)
         _tokens_into(record, answer, clock())
         write_credentials(record)  # in place before the new access token is used for anything
         return str(record["access"])
-    finally:
-        try:
-            _lock_path().unlink()
-        except OSError:
-            pass
+    except LoginError as e:
+        if e.kind in ("refresh_failed", "unreachable", "bad_response"):
+            record["refresh_failure"] = {
+                "reason": str(e),
+                "at": datetime.fromtimestamp(clock(), timezone.utc).isoformat(),  # noqa: UP017 (Python 3.9)
+            }
+            write_credentials(record)
+        raise
 
 
 def refresh_in_background() -> None:
