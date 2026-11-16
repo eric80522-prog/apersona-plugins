@@ -11,6 +11,12 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       上傳前換代號 (`GET /api/intake/settings`, no file in it; when the site cannot be asked, as if on:
                       寧可多遮). His home folder itself, or more than `MAX_ASK_FILES` files, stops here first and asks
                       him (`--large` once he has said yes). The list is kept (`plan.json`) for `send`.
+- `--ai ask`          the same, for his AI conversation records on this machine instead of a folder, found in one go:
+                      Claude Code's main conversations (`apersona_stats.claude_conversations`) and the Codex
+                      sessions a person typed in (`~/.codex/sessions`, by the rollout's first line,
+                      `apersona_hook.session_source`; `codex exec` and subagents are not sent), each as it is; an
+                      `.apersonaignore` in either place is kept. Printed as how many and how large per tool, not file
+                      by file. `--ai` then stands for the folder in every command below.
 - `send [--read]`     after his yes to the list (with `--read`: that one yes is to sending and reading together,
                       and the read is queued right after the upload, nothing more is asked): those files
                       exactly (one changed since `ask` stops it), with
@@ -69,6 +75,7 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_ignore import Walk  # noqa: E402
 from apersona_mask import Masker, redact_json, redact_secrets  # noqa: E402
+from apersona_projects import with_project  # noqa: E402
 from apersona_safe import (  # noqa: E402
     EXIT_ASK_FIRST,
     EXIT_PAUSED,
@@ -128,6 +135,32 @@ def write_json(path: Path, value: object) -> None:
     if sys.platform != "win32":
         os.chmod(str(temporary), 0o600)
     os.replace(str(temporary), str(path))
+
+
+def ai_records() -> tuple[list[tuple[str, Path]], list[tuple[str, str]], int]:
+    """His AI conversation records on this machine: (which tool, file) for each to send, (file, why) for each that is
+    not, and how many the ignore rules left out."""
+    import apersona_codex  # beside this file: where Codex keeps its sessions
+    import apersona_hook
+    import apersona_stats
+
+    claude, left_out = apersona_stats.claude_conversations()
+    found = [("Claude Code", path) for path in claude]
+    held: list[tuple[str, str]] = []
+    root = apersona_codex.codex_home() / "sessions"
+    walk = Walk(root, {".jsonl"})
+    for relative in walk.files:
+        path = root / relative
+        if apersona_hook.session_source({"transcript_path": str(path)}) in apersona_hook.CODEX_INTERACTIVE:
+            found.append(("Codex", path))
+        else:
+            held.append((str(path), "不是本人親手打的 Codex 對話（codex exec 或子代理），不送"))
+    return found, held, left_out + walk.left_out
+
+
+def ai_work() -> Path:
+    "The work folder of `--ai`: one for his AI records, beside the folders' own."
+    return private_dir(Path.home() / ".apersona" / "intake" / "ai")
 
 
 def work_for(folder: Path) -> Path:
@@ -319,9 +352,10 @@ def read_bytes(path: Path) -> bytes:
         return stream.read(MAX_FILE_BYTES + 1)
 
 
-def prepared(path: Path, masker: Masker | None, names: list[str]) -> tuple[bytes | None, str]:
+def prepared(path: Path, masker: Masker | None, names: list[str], ai: bool = False) -> tuple[bytes | None, str]:
     """The bytes to send of one file and, when it is not sent, why: a text file with its secrets dropped (and codes
-    swapped when `masker`); a .docx or .pdf as it is, or not at all with codes on."""
+    swapped when `masker`); a .docx or .pdf as it is, or not at all with codes on. `ai`: an AI conversation record,
+    whose rows go with their folder put as the project's key (`with_project`), never the path."""
     try:
         if path.is_symlink():
             return None, LINKED_HERE
@@ -358,7 +392,8 @@ def prepared(path: Path, masker: Masker | None, names: list[str]) -> tuple[bytes
             lines: list[str] = []
             for line in text.split("\n"):
                 try:
-                    lines.append(json.dumps(redact_json(json.loads(line), mask), ensure_ascii=False))
+                    row = json.loads(line)
+                    lines.append(json.dumps(redact_json(with_project(row) if ai else row, mask), ensure_ascii=False))
                 except ValueError:
                     lines.append(mask(line))
             return "\n".join(lines).encode("utf-8"), ""
@@ -430,24 +465,46 @@ def too_broad(folder: Path, count: int) -> str:
     return ""
 
 
-def ask(folder: Path, work: Path, large: bool) -> int:
-    "`ask`: what `send` would send, listed here; nothing of the files leaves the machine."
+def per_tool(rows: list[dict[str, object]], tools: dict[str, str], held: list[tuple[str, str]]) -> list[str]:
+    "His AI records as `ask` lists them: how many and how large per tool (they run to hundreds), and why not sent."
+    lines: list[str] = []
+    for tool in ("Claude Code", "Codex"):
+        mine = [int(cast(int, r["size"])) for r in rows if tools[str(r["path"])] == tool]
+        lines.append(f"- {tool} 對話：{len(mine)} 份（{size_text(sum(mine))}），原檔照送，秘密先在這台遮掉")
+    reasons: dict[str, int] = {}
+    for _, why in held:
+        reasons[why] = reasons.get(why, 0) + 1
+    return lines + [f"- 不送 {n} 份：{why}" for why, n in reasons.items()]
+
+
+def ask(folder: Path | None, work: Path, large: bool) -> int:
+    """`ask`: what `send` would send, listed here; nothing of the files leaves the machine. No `folder`: his AI
+    records (`ai_records`), listed per tool; the plan names them from his home folder (or in full, outside it)."""
     site, persona, key = options()
-    if not folder.is_dir():
+    if folder is not None and not folder.is_dir():
         raise RefusedError(f"找不到素材資料夾：{folder}")
     private_dir(work)
     on = codes_on(site, persona, key)
-    walk = Walk(folder, SUFFIXES)
-    broad = too_broad(folder, len(walk.files))
-    if broad and not large:
-        print(f"先停下來問本人：{broad}。確定要整個送嗎？")
-        print("本人說確定，才加 --large 再跑一次 ask；不然請挑一個只放素材的資料夾。")
-        return EXIT_ASK_FIRST
+    if folder is None:
+        base = Path.home().resolve()
+        records, held, left_out = ai_records()
+        tools = {
+            str(path.resolve().relative_to(base)) if base in path.resolve().parents else str(path.resolve()): tool
+            for tool, path in records
+        }
+    else:
+        base, held = folder.resolve(), []
+        walk = Walk(folder, SUFFIXES)
+        tools, left_out = dict.fromkeys(walk.files, ""), walk.left_out
+        broad = too_broad(folder, len(walk.files))
+        if broad and not large:
+            print(f"先停下來問本人：{broad}。確定要整個送嗎？")
+            print("本人說確定，才加 --large 再跑一次 ask；不然請挑一個只放素材的資料夾。")
+            return EXIT_ASK_FIRST
     probe = Masker([], []) if on else None  # only to learn which files could not go; nothing is coded or kept
     rows: list[dict[str, object]] = []
-    held: list[tuple[str, str]] = []
-    for relative in walk.files:
-        path = folder / relative
+    for relative in tools:
+        path = base / relative
         _, why = prepared(path, probe, [])
         if why:
             held.append((relative, why))
@@ -455,14 +512,17 @@ def ask(folder: Path, work: Path, large: bool) -> int:
         rows.append({"path": relative, "size": path.stat().st_size, "sha256": digest(path)})
     write_json(
         work / "plan.json",
-        {"folder": str(folder.resolve()), "codes": on, "files": rows, "held": held, "left_out": walk.left_out},
+        {"folder": str(base), "codes": on, "ai": folder is None, "files": rows, "held": held, "left_out": left_out},
     )
     total = sum(int(cast(int, r["size"])) for r in rows)
     lines = [f"還沒送出任何東西。本人同意後，會把這 {len(rows)} 份（共 {size_text(total)}）送到 {site}："]
-    lines += [f"- {r['path']}（{size_text(int(cast(int, r['size'])))}）" for r in rows]
-    lines += [f"- 不送：{path}：{why}" for path, why in held]
-    if walk.left_out:
-        lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {walk.left_out} 份，不送")
+    if folder is None:
+        lines += per_tool(rows, tools, held)
+    else:
+        lines += [f"- {r['path']}（{size_text(int(cast(int, r['size'])))}）" for r in rows]
+        lines += [f"- 不送：{path}：{why}" for path, why in held]
+    if left_out:
+        lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，不送")
     lines.append(f"本機工作資料夾：{work}")
     if rows:
         lines.append(
@@ -542,7 +602,7 @@ def send(work: Path, names_file: Path | None, me: list[str], read: bool = False,
     held = [] if take else [(str(h[0]), str(h[1])) for h in cast("list[list[str]]", plan.get("held") or [])]
     sending: list[tuple[str, bytes]] = []
     for relative in relatives:
-        data, why = prepared(folder / relative, masker, names)
+        data, why = prepared(folder / relative, masker, names, ai=plan.get("ai") is True)
         if data is None:
             held.append((relative, why))
             continue
@@ -627,9 +687,19 @@ def said(
         lines.append(PREPARED if readable else "同意後只補登完整訊息觀測，不重新讀取、不花額度；不同意不補登。")
         action = "要開始讀" if readable else "要補登觀測"
         lines.append(f"{action}，請本人親口說同意：「{question(agreeable, n)}」")
-    else:
+    rules = rules_line(answers) if asking else ""
+    if not agreeable and not rules:
         lines.append("這次沒有能讀的段落，不用同意。")
-    return "\n".join(lines)
+    return "\n".join(lines + ([rules] if rules else []))
+
+
+def rules_line(answers: list[dict[str, object]]) -> str:
+    "The site's 「只整理規矩」 sentence, when a batch has one, for him to say before `consent rules`; empty otherwise."
+    rules = [cast("dict[str, object]", a["rulesOnly"]) for a in answers if isinstance(a.get("rulesOnly"), dict)]
+    if not rules:
+        return ""
+    sentence = rules[0].get("question")
+    return f"也可以只整理規矩（不逐段讀；之前送過的檔也能再整理一次）：本人親口說「{sentence}」才跑 consent rules。"
 
 
 def _on_free(answer: dict[str, object]) -> bool:
@@ -660,7 +730,8 @@ def _uploads(work: Path) -> dict[str, object]:
 
 def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
     """`consent yes|no|rules`: his answer to the sentence, for every batch of the last `ask`. `rules`: his yes to the
-    site's second sentence (`rulesOnly`, 「只整理成長期規矩，不逐段讀」) for each batch that has one; a batch without it
+    site's second sentence (`rulesOnly`, 「只整理成長期規矩，不逐段讀」) for each batch that has one, a batch of files
+    sent before included (nothing new to read, but 長期規矩 is made again over what is kept); a batch without it
     (nothing he said to an AI in it) is left unanswered."""
     site, persona, key = options()
     record = _uploads(work)
@@ -677,7 +748,7 @@ def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
         print(fenced(said_last) if said_last else "沒同意：什麼都不讀、不花錢")
         return 0
     agreed: list[str] = []
-    for a in _agreeable(answers):
+    for a in answers if rules_only else _agreeable(answers):
         body: dict[str, object] = {**who(persona), "jobId": a["jobId"], "consentSha256": a["consentSha256"]}
         if rules_only:
             offered = a.get("rulesOnly")
@@ -688,7 +759,7 @@ def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
         reply = patiently(partial(post_json, site, FILES_CONSENT_PATH, key, body), "同意")
         if reply.get("message"):
             print(fenced(str(reply["message"])))
-        if reply.get("queued") or reply.get("rulesOnly"):
+        if reply.get("queued") or "rulesOnly" in reply:
             agreed.append(str(a["jobId"]))
     record["consent"] = True
     record["agreed"] = agreed
@@ -758,9 +829,10 @@ def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_intake.py")
     parser.add_argument("--folder", type=Path, help="素材資料夾（send、consent、status、cancel 用來找它的工作資料夾）")
     parser.add_argument("--work", type=Path, help="改用別的本機工作資料夾（預設 ~/.apersona/intake/<資料夾雜湊>）")
+    parser.add_argument("--ai", action="store_true", help="不給資料夾：送這台的 Claude Code 與 Codex 對話紀錄")
     commands = parser.add_subparsers(dest="command", required=True)
     asking = commands.add_parser("ask", help="只在本機列出要送哪些檔、幾份、多大；什麼都不送")
-    asking.add_argument("folder", type=Path)
+    asking.add_argument("folder", type=Path, nargs="?", help="素材資料夾；用 --ai 時不給")
     asking.add_argument("--large", action="store_true", help="本人確定要送整個家目錄或超過 200 份時才加")
     sending = commands.add_parser("send", help="本人看過清單說好之後：送 ask 列的那些檔上網站切段")
     sending.add_argument("--names-file", type=Path, help="上傳前換代號開著時要換成代號的人名，一行一個")
@@ -781,15 +853,18 @@ def _main(argv: list[str] | None = None) -> int:
     commands.add_parser("cancel")
     args = parser.parse_args(argv)
     try:
-        folder: Path | None = args.folder
+        folder: Path | None = None if args.ai else args.folder
         if args.work is not None:
             work: Path = args.work
+        elif args.ai:
+            work = ai_work()
         elif folder is not None:
             work = work_for(folder)
         else:
-            raise RefusedError("要給素材資料夾：--folder <資料夾>")
+            raise RefusedError("要給素材資料夾：--folder <資料夾>，或用 --ai 送這台的 AI 對話紀錄")
         if args.command == "ask":
-            assert folder is not None  # the subcommand's own argument
+            if folder is None and not args.ai:
+                raise RefusedError("要給素材資料夾，或用 --ai 送這台的 AI 對話紀錄")
             return ask(folder, work, bool(args.large))
         if args.command == "send":
             return send(work, args.names_file, list(args.me), bool(args.read), list(args.take_deleted))

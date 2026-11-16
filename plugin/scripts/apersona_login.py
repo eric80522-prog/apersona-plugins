@@ -4,19 +4,21 @@
                                            website; run again to go on waiting (a code lives ten minutes)
     apersona_login.py status               logged in or not, asked of the site (never prints a token)
     apersona_login.py refresh              trade an ending access token now, quietly (what the hook starts)
-    apersona_login.py logout               sign this machine out on the website and delete the credentials file
+    apersona_login.py logout [--keep keep|delete]  with 收錄 on, ask first whether to keep what it took in; then
+                                           sign this machine out on the website and delete the credentials file
 
 Standard library only, on whatever python3 the machine has (3.9 and up). The credentials are in
 `~/.apersona/plugin-credentials.json` (the folder 700, the file 600, except on Windows): site, client_id, access,
 refresh and when the access token ends. This login is the only way the plugin reaches the site.
 
-The hook never logs in and never trades (it may be killed at its 3 seconds, and a trade cut off after the site
-answered would leave the new pair unwritten and the device signed out on the next try): with an access token near its
-end it starts `refresh` as a process of its own and leaves the turn alone (`token_expiring`). Everything else trades
-when the access token has ended. The site makes every refresh token good once and signs the whole device out when an
-old one comes back, so a new pair is written to the file before anything else is done with it, and only one process
-at a time may trade (a lock file; a second one waits for the first one's answer instead of presenting the same refresh
-token again).
+Whether a process trades now is one decision (`Trade`, `_due`). The hook and the MCP forwarder never trade (either
+may be killed at any moment, and a trade cut off after the site answered would leave the new pair unwritten and the
+device signed out on the next try): ten minutes before the access token ends they start `refresh` as a process of its
+own, which trades then; with an ended token they wait, within their own time, for that trade's pair (`token_expiring`
+only when it does not come in time). The commands he runs trade when the access token has ended. The site makes
+every refresh token good once and signs the whole device out when an old one comes back, so a new pair is written to
+the file before anything else is done with it, and only one process at a time may trade (a lock file; a second one
+waits for the first one's answer instead of presenting the same refresh token again).
 """
 
 from __future__ import annotations
@@ -32,11 +34,13 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_safe import (  # noqa: E402
+    EXIT_ASK_FIRST,
     EXIT_FAILED,
     EXIT_NOT_LOGGED_IN,
     EXIT_UNFINISHED,
@@ -54,13 +58,36 @@ REDIRECT_URI = "http://127.0.0.1/apersona-device"
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 #: a token this close to its end is traded before it is used (the hook skips the turn instead)
 SKEW_S = 60
-#: a token this close to its end has the hook start a trade in the background while it still uses the token
+#: a token this close to its end is traded early by `refresh`, which the hook and the forwarder start while they still
+#: use the token
 AHEAD_S = 600
 LOCK_WAIT_S = 1.5
 LOCK_STALE_S = 30
 HTTP_TIMEOUT_S = 10
+#: the longest a hook or the forwarder waits for the background trade's pair: its answer, and a lock wait before it
+TRADE_WAIT_S = HTTP_TIMEOUT_S + LOCK_WAIT_S + 1
 #: how long one `login` waits for him before it says to run it again
 LOGIN_WAIT_S = 90
+
+
+class Trade(Enum):
+    "When the asking process trades the refresh token itself: the one place each caller says so."
+
+    #: never here: start `refresh` as a process of its own and wait for its pair (the hook, the MCP forwarder)
+    WAIT = "wait"
+    #: a token at its end (`SKEW_S`): the commands he runs
+    ENDED = "ended"
+    #: a token within `AHEAD_S` of its end: the background `refresh`, so the token never ends while he works
+    AHEAD = "ahead"
+    #: even a token that has not ended: `status`, since only the site knows whether he signed this device out
+    ALWAYS = "always"
+
+
+def _due(trade: Trade, left: float) -> bool:
+    "Whether `trade` trades a token with `left` seconds to go."
+    if trade is Trade.ALWAYS:
+        return True
+    return left <= (AHEAD_S if trade is Trade.AHEAD else SKEW_S)
 
 
 class LoginError(Exception):
@@ -277,29 +304,20 @@ def bearer(
     timeout_s: float = HTTP_TIMEOUT_S,
     clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
-    trade: bool = True,
-    verify: bool = False,
+    trade: Trade = Trade.ENDED,
 ) -> str:
-    """The access token for `site`, traded for a new pair first when it has ended or is about to. `LoginError`
+    """The access token for `site`, traded for a new pair first when `trade` says it is due. `LoginError`
     `not_logged_in` when `login` was never run for this site (or the device was signed out: then the file is
     removed and he logs in again), `login_busy` when another process is trading and did not finish in time, and
-    `token_expiring` instead of a trade when `trade` is False (the hook). `verify` trades even a token that has not
-    ended: only the site knows whether he signed this device out on the website, and a trade is how to ask."""
+    for `Trade.WAIT` `token_expiring` (or `refresh_failed`) when the background trade's pair did not come in time."""
     record = read_credentials()
     access, refresh, client_id = record.get("access"), record.get("refresh"), record.get("client_id")
     if record.get("site") != site or not (isinstance(access, str) and isinstance(refresh, str)):
         raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
-    left = float(cast("float", record.get("expires_at") or 0)) - clock()
-    if not trade and left <= AHEAD_S:
-        refresh_in_background()
-    if left > SKEW_S and not verify:
+    if trade is Trade.WAIT:
+        return _wait_for_trade(site, record, min(timeout_s, TRADE_WAIT_S), clock, sleep)
+    if not _due(trade, float(cast("float", record.get("expires_at") or 0)) - clock()):
         return access
-    if not trade:
-        failure = record.get("refresh_failure")
-        if isinstance(failure, dict):
-            detail = cast("dict[str, object]", failure)
-            raise LoginError("refresh_failed", f"換新通行證失敗：{detail.get('reason')}（{detail.get('at')}）")
-        raise LoginError("token_expiring", "通行證快到期，背景正在換新；下一句就會帶")
     if not isinstance(client_id, str):
         raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
     if not _take_lock(min(LOCK_WAIT_S, timeout_s), clock, sleep):
@@ -309,7 +327,7 @@ def bearer(
         access, refresh = record.get("access"), record.get("refresh")
         if not (isinstance(access, str) and isinstance(refresh, str)):
             raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
-        if float(cast("float", record.get("expires_at") or 0)) - clock() > SKEW_S and not verify:
+        if not _due(trade, float(cast("float", record.get("expires_at") or 0)) - clock()):
             return access
         return _refresh_tokens(site, record, timeout_s, clock)
     finally:
@@ -317,6 +335,31 @@ def bearer(
             _lock_path().unlink()
         except OSError:
             pass
+
+
+def _wait_for_trade(
+    site: str, record: dict[str, object], wait_s: float, clock: Callable[[], float], sleep: Callable[[float], None]
+) -> str:
+    """The access token for a process that never trades: within `AHEAD_S` of its end `refresh` is started as a
+    process of its own; a token still good is used as is, an ended one is waited for (up to `wait_s`) until that
+    trade writes its pair. A failure the trade records while waiting ends the wait (`refresh_failed`)."""
+    if float(cast("float", record.get("expires_at") or 0)) - clock() <= AHEAD_S:
+        refresh_in_background(site)
+    earlier = record.get("refresh_failure")
+    end = clock() + wait_s
+    while True:
+        access, failure = record.get("access"), record.get("refresh_failure")
+        if record.get("site") != site or not isinstance(access, str):
+            raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
+        if float(cast("float", record.get("expires_at") or 0)) - clock() > SKEW_S:
+            return access
+        if isinstance(failure, dict) and (failure != earlier or clock() >= end):
+            detail = cast("dict[str, object]", failure)
+            raise LoginError("refresh_failed", f"換新通行證失敗：{detail.get('reason')}（{detail.get('at')}）")
+        if clock() >= end:
+            raise LoginError("token_expiring", "通行證快到期，背景正在換新；下一句就會帶")
+        sleep(0.1)
+        record = read_credentials()
 
 
 def _refresh_tokens(site: str, record: dict[str, object], timeout_s: float, clock: Callable[[], float]) -> str:
@@ -355,9 +398,9 @@ def _refresh_tokens(site: str, record: dict[str, object], timeout_s: float, cloc
         raise
 
 
-def refresh_in_background() -> None:
-    "Start `refresh` as a process of its own (its own session), so the hook's 3-second kill never reaches it."
-    command = [sys.executable, str(Path(__file__).resolve()), "refresh"]
+def refresh_in_background(site: str) -> None:
+    "Start `refresh` for `site` as a process of its own (its own session): the hook's 3-second kill never reaches it."
+    command = [sys.executable, str(Path(__file__).resolve()), "refresh", "--site", site]
     quiet = subprocess.DEVNULL
     try:
         if sys.platform == "win32":
@@ -393,6 +436,28 @@ def logout(site: str) -> str:
     return (said + "；" if said else "") + "這台的登入檔已刪除"
 
 
+def sign_out(site: str, keep: str | None) -> int:
+    """`logout [--keep keep|delete]`. With 收錄 on and turns taken in since it opened, his answer comes first, to the
+    same question as turning 收錄 off (撤銷裝置先問同一題): without `--keep` the question is printed and nothing
+    is done. Then 收錄 goes off on the site with that answer, the device signs out (`logout`), and every client's
+    consent file on this machine goes."""
+    import apersona_hook  # beside this file: the one place that asks the site about 收錄 and tells it
+
+    on, asked = apersona_hook.capture_turns(site)
+    if asked and keep is None:
+        print(asked + "本人說「保留」或「刪除」之後，再執行 logout --keep keep 或 --keep delete；沒說就不登出。")
+        return EXIT_ASK_FIRST
+    if on:
+        refused = apersona_hook.tell_site(site, {"on": False}, "claude", keep != "delete")
+        if refused:
+            print(f"網站沒收到收錄關閉（{refused}）；網站裝置頁請按「撤銷」並回答留或刪")
+        elif keep == "delete":
+            print("這台收錄來的對話已刪除，期限內可在網站資料頁恢復")
+    print(logout(site))
+    apersona_hook.forget_consents()
+    return 0
+
+
 def connection_check(site: str) -> str:
     """One line on whether the login just saved really works: the 開場包 is asked for once with it, as the next
     conversation's SessionStart hook will. Never raises, never prints the pack or a token; a miss says what to run."""
@@ -426,6 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_login.py")
     parser.add_argument("command", choices=("login", "status", "refresh", "logout"))
     parser.add_argument("--site", default="")
+    parser.add_argument("--keep", choices=("keep", "delete"), help="logout：收錄收過的對話，本人說保留或刪除")
     args = parser.parse_args(argv)
     code = _main(args)
     if code:
@@ -440,8 +506,7 @@ def _main(args: argparse.Namespace) -> int:
         print(str(e))
         return EXIT_FAILED
     if args.command == "logout":
-        print(logout(site))
-        return 0
+        return sign_out(site, args.keep)
     if args.command in ("status", "refresh"):
         if not logged_in(site):
             if args.command == "status":
@@ -449,7 +514,7 @@ def _main(args: argparse.Namespace) -> int:
             return EXIT_NOT_LOGGED_IN
         try:
             # status asks the site (a trade): a device signed out on the website still holds a token that looks fine
-            bearer(site, verify=args.command == "status")
+            bearer(site, trade=Trade.ALWAYS if args.command == "status" else Trade.AHEAD)
         except LoginError as e:
             if args.command == "status" and e.kind == "unreachable":
                 print(f"本機有 {site} 的登入檔，但連不上網站，無法確認是否已在網站撤銷（{e}）")

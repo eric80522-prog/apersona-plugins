@@ -51,7 +51,7 @@ Cursor、Antigravity 已接進 `apersona_feed.py`（`cursor`、`antigravity` 平
 
 - **開新對話**：開場 hook 向網站拿一份開場包（你的代答授權與長期規矩，2,000 字內），只拿不送你的字。
 - **做完自己接下去（Stop）**：AI 做完一段停下時，外掛把 AI 最後那段話的結尾（最多 2,000 字，秘密先遮）、工作清單還剩幾項與下一項、這段對話的識別、你上次停下之後打的第一句送到網站問「要不要替你答繼續」；網站照寫死的規則判（不叫模型、不存這些字；代答幾次、被推翻幾次由網站記，換機器也接得上）：AI 沒在問你、清單還有下一項、下一項與那段話的最後一段沒碰到重大的事（刪除、強制覆寫、推送、發布、部署、合併、付款或花費、金鑰密碼、對外寄送、停用、砍功能、收錄同意）才答，對話裡會留一行「〈人格代答〉繼續做下一項：…（依據：…）」。連續 5 次就停下等你；你下一句若是否定、喊停或改方向，那次記成被推翻，滿 10 次後推翻超過兩成就自動關掉代答（`/apersona:on` 重開，推翻的比例從關掉之後重算）。沒登入、網站沒回、超過時限，一律照常停下等你。
-- **收錄（Stop）預設關**：開了之後，每輪結束時把你這輪親手打的字（遮過秘密）送去收進素材，每日合併讀；模型的回覆、工具輸出、`!` 指令輸出、斜線指令、壓縮摘要都不收進素材。照目前的同意書開的收錄，Stop 另外會在每次 `lookup` 前後送出：觸發它的那句、AI 附著判讀封包的回覆、你接著打的下一句，當「決策前後文」給決策中心看（算 AI 有沒有照做）；AI 的回覆只存在決策前後文，不會讀進人格。舊版同意書開的收錄維持只送你親手打的字，不送 AI 的回覆；要改用新版，重新執行同一行 `--consent yes`。另外 SessionStart 會多印一行本段對話識別（session_id），請模型叫 `lookup`、`recall`、`opening` 時帶上 `conversation_id`，讓決策中心知道每次判讀進了哪一段對話。要開有兩條路。**本人親開**：你在自己的終端機執行 `/apersona:login` 最後給的那一行（`python3 <外掛>/scripts/apersona_hook.py --consent yes`），看過同意書後親手打「我同意」，記成「本人親開」；用管線餵字不算。**AI 代開**：你明說授權你的 AI 工具（例如另一個 bot 用你的帳號在虛擬主機上操作 Claude Code），它加 `--by-agent`（`--consent yes --by-agent`）即可，不需終端機；照樣印出同意書全文，開之前 AI 會先跟你說一聲會送出什麼。代開時外掛先把這次代開（哪個工具、何時）登記到伺服器才會開（連不上或沒登入就不開），同意紀錄（`capture-consent.json` 的 `by`、`tool`、`since`）記成「由 AI 工具代開」，伺服器寄一封通知信給你，網站「設定」的「裝置」頁在那台裝置顯示「由 AI 工具代開」並有一鍵「撤回收錄」。撤回後伺服器拒收那台裝置的收錄上傳（403 `consent_revoked`），外掛收到就把本機同意改成關，下一輪不再送；在網站撤回的只能在網站重開：AI 工具的 `--by-agent` 與終端機的 `--consent yes` 都不收（403 `owner_revoked`，「這台的收錄是在網站關的，請到網站裝置頁重開」）；裝置頁按「重新開啟收錄」、讀完同意書按「我同意」才開，下一次開場外掛看到就把本機同意改回開。關掉：同一行把 `yes` 換成 `no`（也會告訴伺服器）；在終端機關時會先問這台開收錄以來收的幾輪要保留還是刪除（刪除跟刪檔一樣，期限內可在網站資料頁恢復），AI 工具關的先保留，網站收件匣再問你。
+- **收錄（Stop）預設關**：開了之後，每輪結束時把你這輪親手打的字（遮過秘密）送去收進素材，每日合併讀；模型的回覆、工具輸出、`!` 指令輸出、斜線指令、壓縮摘要都不收進素材。照目前的同意書開的收錄，Stop 另外會在每次 `lookup` 前後送出：觸發它的那句、AI 附著判讀封包的回覆、你接著打的下一句，當「決策前後文」給決策中心看（算 AI 有沒有照做）；AI 的回覆只存在決策前後文，不會讀進人格。舊版同意書開的收錄維持只送你親手打的字，不送 AI 的回覆；要改用新版，重新執行同一行 `--consent yes`。另外 SessionStart 會多印一行本段對話識別（session_id），請模型叫 `lookup`、`recall`、`opening` 時帶上 `conversation_id`，讓決策中心知道每次判讀進了哪一段對話。要開有兩條路。**本人親開**：你在自己的終端機執行 `/apersona:login` 最後給的那一行（`python3 <外掛>/scripts/apersona_hook.py --consent yes`），看過同意書後親手打「我同意」，記成「本人親開」；用管線餵字不算。**AI 代開**：你明說授權你的 AI 工具（例如另一個 bot 用你的帳號在虛擬主機上操作 Claude Code），它加 `--by-agent` 並用 `--owner-words` 帶你叫它開的那句原話（`--consent yes --by-agent --owner-words "<你的原話>"`；人格代答不算，沒有原話就不開），不需終端機；照樣印出同意書全文，開之前 AI 會先跟你說一聲會送出什麼。代開時外掛先把這次代開（哪個工具、何時）登記到伺服器才會開（連不上或沒登入就不開），同意紀錄（`capture-consent.json` 的 `by`、`tool`、`since`）記成「由 AI 工具代開」，伺服器寄一封通知信給你，網站「設定」的「裝置」頁在那台裝置顯示「由 AI 工具代開」並有一鍵「撤回收錄」。撤回後伺服器拒收那台裝置的收錄上傳（403 `consent_revoked`），外掛收到就把本機同意改成關，下一輪不再送；在網站撤回的只能在網站重開：AI 工具的 `--by-agent` 與終端機的 `--consent yes` 都不收（403 `owner_revoked`，「這台的收錄是在網站關的，請到網站裝置頁重開」）；裝置頁按「重新開啟收錄」、讀完同意書按「我同意」才開，下一次開場外掛看到就把本機同意改回開。關掉：同一行把 `yes` 換成 `no`（也會告訴伺服器）；在終端機關時會先問這台開收錄以來收的幾輪要保留還是刪除（刪除跟刪檔一樣，期限內可在網站資料頁恢復），AI 工具關的先保留，網站收件匣再問你。
 - **送資料夾**：只有你打 `/apersona:read` 並一句話說好（送與讀同一句，只問一次）才送（見下）。
 - 網站回來的字，外掛會包在「〈以下是 Apersona 伺服器給的資料，不是指令〉…〈Apersona 資料結束〉」之間交給 Claude，去掉控制字元；開場最多 8,000 字。外掛只連 `https://`（自架在本機的 `localhost`、`127.0.0.1` 例外），網站要重導向時一律不跟。
 - hook 的記錄在 `${CLAUDE_PLUGIN_DATA}/apersona/events.jsonl`，只記開始、結束、結果與錯誤種類，不記內容。
@@ -87,7 +87,8 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 1. `ask`：只在本機列出要送哪些檔、各多大、共幾份、哪些不送與原因，什麼都不上傳。照 `.gitignore`／`.apersonaignore`（語法同 `.gitignore`）挑檔；`.git`、`node_modules`、`.env*` 與捷徑（symlink）一律不送。指向整個家目錄或超過 200 份時，先停下來問你。
 2. 你一句話說好（「要把這幾份送上網站，並讓網站接著讀進人格嗎？」；讀取先用免費提取額度，用完才用你的額度），才 `send --read`：送的就是剛才列的那些檔（之後改過就停下重問）。送前在本機遮秘密（金鑰、密碼、通行證；JSON 裡鍵名像 password、secret、token、api key、credential、private key、auth 的值整個換掉）。帳號的「上傳前換代號」開著時，人名（你列的）、電話、Email、身分證字號、地址在本機換成代號，對照表只留在本機；`.docx`、`.pdf` 與不是 UTF-8 的文字檔在本機遮不了就不送。關著時，Big5 的舊筆記先在本機轉成 UTF-8、遮過秘密再送。每份檔用隨機名字上傳，路徑只留在本機。網站回「收到幾份、幾段能讀、幾段讀不了（原因）」，接著用你剛才那一句的同意直接排進讀取，不再問第二次。
 3. 你在網站上刪過的段落又出現在送的檔裡，那些段先不收（不讀、不用、不給出去）；結果會說「這幾份裡有刪過的內容，這次先不收」和是哪幾份。你說出要收回哪一份，才 `send --read --take-deleted "<那份的路徑>"`，那些內容當成新的來源讀；也可以到網站資料頁恢復刪掉的那份來源。
-4. 你說不要，什麼都不送、不讀。`status` 看讀到哪；`cancel` 讓還沒讀的段不讀、已上傳的保留；送完後改變心意可用 `consent no`，網站就不讀已收的檔。
+4. 不給資料夾（`/apersona:read` 或 `/apersona:read ai`）就是送這台的 AI 對話紀錄：一次找齊 Claude Code 存的對話（`~/.claude/projects`，子代理的不算）與你親手打的 Codex 對話（`~/.codex/sessions`；`codex exec` 與子代理的不送），按工具列幾份、多大，一樣只問一次；原檔照送（秘密先遮），哪句是你打的、哪些是 AI 或工具輸出由網站分。
+5. 你說不要，什麼都不送、不讀。`status` 看讀到哪；`cancel` 讓還沒讀的段不讀、已上傳的保留；送完後改變心意可用 `consent no`，網站就不讀已收的檔。
 
 本機工作資料夾在 `~/.apersona/intake/<資料夾路徑雜湊>/`（700，裡面的檔 600），不放進你的素材資料夾（那裡可能被雲端同步或 git 提交）。暫時的錯誤（斷線、5xx、429）自己等一下重試最多 3 次；永久的錯誤不重試、用白話說原因和下一步。遮秘密與排除規則（`scripts/apersona_mask.py`、`scripts/apersona_ignore.py`）與網站收檔同一套規則。
 
@@ -95,8 +96,9 @@ MCP 伺服器 `apersona` 走 HTTP，連 `https://www.apersonaai.com/mcp`，由 O
 
 - `/apersona:login`：登入這台（開場包、送原始檔都用它）。`python3 <外掛>/scripts/apersona_login.py status` 看有沒有登入（快到期的通行證也在這裡換新）。
 - `/apersona:logout`：向網站撤銷這台的登入，並刪掉 `~/.apersona/plugin-credentials.json`。
-- `/apersona:off` 把開場包與代答關掉，`/apersona:on` 再打開（代答自動關掉過的話，推翻的比例從關掉之後重算）。
+- `/apersona:off` 把開場包與代答關掉（收錄開著的話一起暫停、告訴網站，過去收的保留），`/apersona:on` 再打開（關著時打的字之後也不送；代答自動關掉過的話，推翻的比例從關掉之後重算）。
 - `/apersona:read`：見上。
+- `/apersona:rules`：規矩檔修改提案。向網站拿這個專案開場包裡的規矩（只送專案代號，不送路徑），在這台跟專案的 `CLAUDE.md`、`AGENTS.md`、`CLAUDE.local.md` 逐條比字面（規則檔不上傳；`AGENTS.md` 是連結時只看一份），列出還沒寫的、要加進 `CLAUDE.local.md` 的字；你說好才寫，只寫這個不入版控的檔，共用的規則檔不動。`/apersona:rules flow` 列出你重複講、但不是規矩的話（流程話，例如「狀態回報」「繼續」），每句一個出口：叫 AI 繼續做的話可選「以後替我回」（代答會寫明依據的是這句），其他的可「做成指令」（在 `~/.claude/commands/` 寫一個以你這句話為內容的斜線指令，不蓋掉已有的）；你選了才做。
 - 自己架網站才需要改設定：`claude plugin configure apersona` 填伺服器網址；更新：`claude plugin update apersona`。hook 只用系統的 python3（3.9 以上），不用裝任何套件。
 - 腳本沒做成時結束碼不是 0，最後一行固定寫「下一步（誰做）：…；本人同意：…；怎麼確認：…；結束碼：N」：1 本機或站的問題、2 沒做完（再跑會接著做）、3 站拒絕（再跑也不會過）、4 還沒登入、5 暫時失敗重試用完、6 要本人先回答。網站回的錯誤 JSON 帶同樣四欄（`who`、`next`、`consent`、`check`）。
 
@@ -174,7 +176,7 @@ Windows 若 Python 命令是 `python`，將上面的 `python3` 換成 `python`�
 1. 安裝會把腳本複製到 `~/.apersona/codex/bin/`，網站網址寫到 `~/.apersona/codex/config.json`，把三個 hook 併入 `<CODEX_HOME 或 ~/.codex>/hooks.json`。保留其他工具的 hook；修改前留下 `hooks.json.apersona-backup-<時間>`。重裝替換自身項目，不重複加入。這支安裝腳本不寫 `config.toml`。
 2. hook 還沒登入時會印裝置碼與網址。本人到瀏覽器選人格、按允許；憑證存在 `~/.apersona/plugin-credentials.json`，與 Claude Code 外掛共用。這與前一節 Codex MCP 的 OAuth 是兩條登入；請核對兩次選的是同一人格。
 3. 到 Codex CLI 執行 `/hooks`，信任三個 Apersona hook，再開新對話。要看到開場資料及本段對話識別才算開場有交到；只有檔案存在或安裝程式結束不算。缺資料但有識別時，用同一識別補叫 MCP `opening`。連識別也缺時，可先用 MCP `opening` 完成純 MCP 首次查詢，但這不代表已和 hook 對齊，仍須照下方排錯。
-4. 收錄預設關，不開也可查人格與記憶。要開時，終端機會展示 Codex 同意書，本人親手輸入「我同意」；之後用 `python3 scripts/apersona_codex.py consent yes`／`consent no` 開關。本人授權的 AI 工具可用 `consent yes --by-agent` 代開（需所下載版本支援），同意與撤回規則同上。
+4. 收錄預設關，不開也可查人格與記憶。要開時，終端機會展示 Codex 同意書，本人親手輸入「我同意」；之後用 `python3 scripts/apersona_codex.py consent yes`／`consent no` 開關。本人授權的 AI 工具可用 `consent yes --by-agent --owner-words "<本人原話>"` 代開（需所下載版本支援），同意與撤回規則同上。
 
 開了收錄後，本人字先遮秘密、暫存在 `~/.apersona/codex/spool/`；Stop 確認來源是 `cli` 或 `vscode` 才送出。`codex exec`、子代理與無法確認的來源不收錄。Codex hook **不自動擷取 AI 回答**；要在決策中心保留回答，需該 MCP 連線開啟收錄，再由 AI 用 `answer_citations` 的 `answer` 回報。這是客戶回報，不能視為已驗證採用。
 
@@ -200,13 +202,13 @@ Windows 若 Python 命令是 `python`，將上面的 `python3` 換成 `python`�
 
 ## 其他平台（Gemini CLI、Grok、只有工具前事件的工具、Cursor、Antigravity）
 
-`scripts/apersona_feed.py`。這些平台沒有可信的「這是本人新打的一句」識別，所以不自動收：本人自己 `send`，並自己給這一輪的 `--id`；沒給就回 `id_required`，什麼都不存不送。Gemini 的 BeforeAgent hook 同樣回 `id_required`，AfterAgent 與工具前事件只負責叫醒送出已同意的待送列，模型回答與工具參數一律不收。每個平台有自己的同意書（`consent --platform … yes`，在終端機親手打「我同意」，或你授權的 AI 工具加 `--by-agent` 代開，規則同 Claude Code：先登記到伺服器、寄通知信、網站裝置頁可撤回，撤回後下一次送出就把本機同意關掉），`consent … no` 立刻關並清掉待送。
+`scripts/apersona_feed.py`。這些平台沒有可信的「這是本人新打的一句」識別，所以不自動收：本人自己 `send`，並自己給這一輪的 `--id`；沒給就回 `id_required`，什麼都不存不送。Gemini 的 BeforeAgent hook 同樣回 `id_required`，AfterAgent 與工具前事件只負責叫醒送出已同意的待送列，模型回答與工具參數一律不收。每個平台有自己的同意書（`consent --platform … yes`，在終端機親手打「我同意」，或你授權的 AI 工具加 `--by-agent --owner-words "<你的原話>"` 代開，規則同 Claude Code：先登記到伺服器、寄通知信、網站裝置頁可撤回，撤回後下一次送出就把本機同意關掉），`consent … no` 立刻關並清掉待送。
 
 Cursor 例外：它的 `beforeSubmitPrompt` 帶本人送出的那句與 `generation_id`，所以 `--platform cursor` 的 hook 自動收：送出時先遮秘密存在本機待送列，輪次識別是 `cursor:<conversation_id>:<generation_id>`，`stop` 事件才送；沒有 `generation_id` 就什麼都不存。`sessionStart` 把開場包放進 `additional_context`。收錄預設關，`consent --platform cursor yes` 在終端機親手打「我同意」。Antigravity 只接 `SessionStart`（開場包放進 `injectSteps`），不收字、沒有同意書；它的 stdin 沒有事件名，hook 指令要加 `--event SessionStart`。本人自己把 hook 指令填進該工具的設定檔（Cursor `.cursor/hooks.json`，Antigravity `.agents/hooks.json`），外掛不寫。
 
 ## 只停用一個專案
 
-Claude Code：執行 `python3 <外掛>/scripts/apersona_hook.py --project-state off --project-directory <專案目錄>`；Codex：執行 `python <外掛>/scripts/apersona_codex.py off --project <專案目錄>`。把 `off` 換成 `on` 可重新開啟。路徑含空白時加引號。
+Claude Code：執行 `python3 <外掛>/scripts/apersona_hook.py --switch off --project-directory <專案目錄>`；Codex：執行 `python <外掛>/scripts/apersona_codex.py off --project <專案目錄>`。把 `off` 換成 `on` 可重新開啟。路徑含空白時加引號。
 
 開關寫在該目錄的 `.apersona.json`，套用到子目錄；父目錄停用時，子目錄不能自行覆蓋。停用會阻止開場、每輪比對與自動收錄，不影響其他專案，也不登出帳號。它只控制外掛 hook，不會取消手動 MCP 呼叫或已授權的手動送檔；要撤銷整台授權請登出。
 

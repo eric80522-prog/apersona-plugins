@@ -298,12 +298,12 @@ def set_switch(on: bool, project: str | None = None) -> int:
             raise InstallError(str(error)) from None
         print("專案 hook 已" + ("開啟；只收錄重新開啟後的內容" if on else "停用"))
         return 0
-    path = data_home() / "apersona.json"
+    hook = load_hook()
     try:
-        write_replacing(path, json.dumps({"on": on}).encode("utf-8"))
-    except OSError as e:
-        raise InstallError(f"寫不進 {path}（{type(e).__name__}）") from None
-    print("開場包與每輪記憶已" + ("打開" if on else "關掉"))
+        said = hook.set_switch("codex", on)
+    except (OSError, ValueError) as e:
+        raise InstallError(f"寫不進 {data_home() / 'apersona.json'}（{type(e).__name__}）") from None
+    print(said)
     return 0
 
 
@@ -372,13 +372,13 @@ def ask_consent(script: Path) -> bool:
     return True
 
 
-def set_consent(answer: str, by_agent: bool = False) -> int:
+def set_consent(answer: str, by_agent: bool = False, words: str = "") -> int:
     "`consent yes|no`; `--by-agent` is an AI tool he authorized opening it with no terminal (the hook's own rule)."
     script = data_home() / "bin" / HOOK_NAME
     if not script.exists():
         raise InstallError("還沒安裝；先執行 install")
     if answer == "yes" and by_agent:
-        return int(load_hook(script).answer_consent("codex", "yes", True))
+        return int(load_hook(script).answer_consent("codex", "yes", True, words))
     if answer == "yes":
         return 0 if ask_consent(script) else 1
     if not record_consent(script, "no"):
@@ -399,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
     ask = commands.add_parser("consent")
     ask.add_argument("answer", choices=("yes", "no"))
     ask.add_argument("--by-agent", action="store_true", help="本人授權的 AI 工具代開收錄（不需終端機；先跟本人說一聲）")
+    ask.add_argument("--owner-words", default="", help="--by-agent 時：本人說要開收錄的那句原話（人格代答不算）")
     args = parser.parse_args(argv)
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
@@ -409,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "uninstall":
             return uninstall()
         if args.command == "consent":
-            return set_consent(args.answer, args.by_agent)
+            return set_consent(args.answer, args.by_agent, args.owner_words)
         if args.command == "status":
             return status()
         return set_switch(args.command == "on", args.project)

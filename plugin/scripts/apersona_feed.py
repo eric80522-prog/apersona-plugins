@@ -99,10 +99,11 @@ def consent(platform: str) -> dict[str, object]:
     return record if record.get("on") is True and record.get("sha256") == CONSENT_SHA256[platform] else {}
 
 
-def write_consent(platform: str, on: bool, by_agent: bool = False) -> dict[str, object]:
+def write_consent(platform: str, on: bool, by_agent: bool = False, words: str = "") -> dict[str, object]:
     """Record his answer and return it; an off also drops everything waiting, and an on starts a new `since`. An on
     also says who opened it: `owner` he typed the phrase at his terminal, `agent` an AI tool did with his
-    authorization (`--by-agent`), and through which platform (the same record the Claude and Codex hook writes)."""
+    authorization (`--by-agent`, with his own sentence `ownerWords`), and through which platform (the same record the
+    Claude and Codex hook writes)."""
     data = data_dir(platform)
     data.mkdir(mode=0o700, parents=True, exist_ok=True)
     record: dict[str, object] = {
@@ -113,6 +114,8 @@ def write_consent(platform: str, on: bool, by_agent: bool = False) -> dict[str, 
     if on:
         record["by"] = "agent" if by_agent else "owner"
         record["tool"] = platform
+        if by_agent:
+            record["ownerWords"] = words
     temp = data / f".capture-consent.{uuid.uuid4().hex}.tmp"
     try:
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -131,23 +134,25 @@ def report_consent(platform: str, record: dict[str, object]) -> str:
     return hook.tell_site(site_of(platform), record, platform)
 
 
-def answer_consent(platform: str, answer: str, by_agent: bool = False) -> int:
+def answer_consent(platform: str, answer: str, by_agent: bool = False, words: str = "") -> int:
     """`consent yes|no`. No is recorded at once (and told to the site, best effort). Yes comes in the same two ways as
     Claude's: he at a terminal types the phrase (recorded `owner`); or, with `--by-agent`, an AI tool he authorized
-    opens it with no terminal: the consent text is printed in full the same, the site must record it (and mail him)
-    first, and a site that cannot be reached, or that he took the 收錄 back on, means it stays off. A pipe with no flag
-    cannot turn it on."""
+    opens it with no terminal, giving his own sentence (`--owner-words`; none, nothing opens): the consent text is
+    printed in full the same, the site must record it (and mail him) first, and a site that cannot be reached, or that
+    he took the 收錄 back on, means it stays off. A pipe with no flag cannot turn it on."""
     if answer == "no":
         report_consent(platform, write_consent(platform, False))
         print("收錄已關閉。")
         return 0
     if by_agent:
+        if not words.strip():
+            return hook.report_refused("owner_confirmation_required")
         print("同意書：" + CONSENT_TEXTS[platform])
         print("以上由 AI 工具代本人開啟（本人已授權）；開啟後會寄通知信給本人，網站「裝置」頁可一鍵撤回。")
-        refused = report_consent(platform, {"on": True, "by": "agent"})
+        refused = report_consent(platform, {"on": True, "by": "agent", "ownerWords": words})
         if refused:
             return hook.report_refused(refused)
-        write_consent(platform, True, True)
+        write_consent(platform, True, True, words)
         print("收錄已開啟（由 AI 工具代開）；隨時可用 consent no 撤回，本人也能在網站裝置頁撤回。")
         return 0
     if not terminal_input():
@@ -351,7 +356,7 @@ def opening_output(platform: str, fields: dict[str, object]) -> tuple[str, str, 
     conversation = text_field(fields, "conversation_id", "conversationId", "session_id")
     started = time.monotonic()
     site, key = hook.login_bearer(site_of(platform), hook.BUDGET_S)
-    text, _ids = hook.fetch_text(
+    text, _receipt = hook.fetch_text(
         hook.opening_request(site, key), max(0.1, hook.BUDGET_S - (time.monotonic() - started))
     )
     text = hook.clean(text).strip()
@@ -472,11 +477,8 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--text-file", default="")
         if name == "consent":
             command.add_argument("answer", choices=("yes", "no"))
-            command.add_argument(
-                "--by-agent",
-                action="store_true",
-                help="本人授權的 AI 工具代開收錄（不需終端機；寄通知信給本人）；開之前先跟本人說一聲",
-            )
+            command.add_argument("--by-agent", action="store_true", help="本人授權的 AI 工具代開；要帶 --owner-words")
+            command.add_argument("--owner-words", default="", help="--by-agent 時：本人說要開收錄的那句原話")
         if name == "setup":
             command.add_argument("--site", default="")
     args = parser.parse_args(argv)
@@ -487,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     if platform in NO_CAPTURE and args.command in ("consent", "send", "flush"):
         return say("no_capture")  # nothing of his is taken here, so there is nothing to agree to or send
     if args.command == "consent":
-        return answer_consent(platform, args.answer, args.by_agent)
+        return answer_consent(platform, args.answer, args.by_agent, args.owner_words)
     if args.command == "setup":
         data = data_dir(platform)
         data.mkdir(mode=0o700, parents=True, exist_ok=True)

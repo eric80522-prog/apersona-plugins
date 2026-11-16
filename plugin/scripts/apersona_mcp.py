@@ -56,8 +56,9 @@ def _post(site: str, message: dict[str, object], protocol: str, timeout: float) 
     identifier = message.get("id")
     try:
         # The host may kill a stdio worker at any time. As with hooks, refresh belongs to the existing
-        # independent process, never a cancellable thread that might lose a just-rotated refresh token.
-        bearer = apersona_login.bearer(site, timeout_s=timeout, trade=False)
+        # independent process, never a cancellable thread that might lose a just-rotated refresh token;
+        # an ended token waits for that process's pair instead of failing the connection.
+        bearer = apersona_login.bearer(site, timeout_s=timeout, trade=apersona_login.Trade.WAIT)
         headers = {
             "Authorization": "Bearer " + bearer,
             "Accept": "application/json, text/event-stream",

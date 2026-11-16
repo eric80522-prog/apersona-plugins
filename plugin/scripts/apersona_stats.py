@@ -2,11 +2,8 @@
 """How much he types in Claude Code, counted on this machine: per day, his typed messages for every 100 replies
 of the AI, and how many of his messages say again what he typed in another conversation.
 
-Reads the main conversations Claude Code keeps on this machine, prints counts and never text, sends nothing.
-
-`--export <folder>` writes those conversations as one 對話包 (`PACK_NAME`: a JSONL, one message a line, `source`,
-`role`, `session`, `time`, `text`) into the folder he names, secrets dropped first: his typed messages as `user`,
-the replies he can see as `assistant`. Nothing is sent; `/apersona:read` on that folder is what sends it.
+Reads the main conversations Claude Code keeps on this machine (`claude_conversations`, also what `/apersona:read`
+with no folder sends as they are), prints counts and never text, sends nothing.
 """
 
 from __future__ import annotations
@@ -22,21 +19,25 @@ from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_hook import block_text, content_blocks, marks_origin, transcript_rows, typed_text  # noqa: E402
-from apersona_mask import redact_secrets  # noqa: E402
+from apersona_ignore import Walk  # noqa: E402
 
 #: two of his messages say the same when this share of their character pairs is common to both
 SAME_SHARE = 0.8
 #: longer than this is a paste, not a sentence he says again
 PASTE_CHARS = 2_000
-#: the 對話包 `--export` writes, and the `source` its lines carry
-PACK_NAME = "apersona_對話包_claude.jsonl"
-PACK_SOURCE = "claude"
+
+
+def claude_conversations() -> tuple[list[Path], int]:
+    """The main conversations Claude Code keeps on this machine, and how many an `.apersonaignore` there (or the
+    always-excluded names) left out; a subagent's file lives one folder deeper and is not one."""
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    walk = Walk(root, {".jsonl"})
+    return [root / relative for relative in walk.files if relative.count("/") == 1], walk.left_out
 
 
 def conversations(since: datetime) -> list[Path]:
-    "The main conversations written to since then; a subagent's file lives one folder deeper and is not one."
-    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
-    return [path for path in sorted(root.glob("*/*.jsonl")) if path.stat().st_mtime >= since.timestamp()]
+    "The main conversations written to since then."
+    return [path for path in claude_conversations()[0] if path.stat().st_mtime >= since.timestamp()]
 
 
 def written_at(row: dict[str, object]) -> datetime | None:
@@ -89,25 +90,6 @@ def messages(since: datetime) -> tuple[list[tuple[datetime, str, str, str, str]]
     return sorted(out), len(files)
 
 
-def export(folder: Path, since: datetime) -> tuple[Path, int, int]:
-    "Write the 對話包 into `folder`; where it is, and how many of its lines are his and how many the AI's."
-    said, _ = messages(since)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / PACK_NAME
-    with path.open("w", encoding="utf-8", newline="\n") as out:
-        for stamp, session, role, text, _ in said:
-            line = {
-                "source": PACK_SOURCE,
-                "role": role,
-                "session": session,
-                "time": stamp.astimezone(timezone.utc).isoformat(),  # noqa: UP017
-                "text": redact_secrets(text),
-            }
-            out.write(json.dumps(line, ensure_ascii=False) + "\n")
-    his = sum(role == "user" for _, _, role, _, _ in said)
-    return path, his, len(said) - his
-
-
 def count(since: datetime) -> tuple[dict[str, list[int]], int]:
     "Per local day [his messages, AI replies, his repeats], and how many conversations were read."
     replies: set[str] = set()
@@ -145,14 +127,9 @@ def per_hundred(his: int, replies: int) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=30)
-    parser.add_argument("--export", type=Path, help="write the 對話包 into this folder instead of counting")
     parser.add_argument("--plugin-data", type=Path, help="the plugin's data folder: adds the 代答 counts kept there")
     args = parser.parse_args(argv)
     since = datetime.now(timezone.utc) - timedelta(days=args.days)  # noqa: UP017
-    if args.export is not None:
-        path, his, replies = export(args.export.expanduser(), since)
-        print(f"對話包寫好了：{path}（他打的 {his} 則、AI 回覆 {replies} 則，秘密已先遮；沒有送出任何東西）。")
-        return 0
     days, files = count(since)
     print("日期\t他打\tAI回覆\t每100則AI回覆他打\t重複講過的")
     for day in sorted(days):

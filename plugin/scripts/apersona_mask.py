@@ -32,7 +32,7 @@ _SECRETS: Final = (
     (
         re.compile(
             r"(?:\bsk-[\w-]{12,}"  # OpenAI and the like
-            r"|apersona_token_[\w-]+"
+            r"|apersona_(?:token|at|rt)_[A-Za-z0-9_-]+"  # this site's own keys, access and refresh tokens
             r"|(?i:\bBearer\s+[\w./+=-]+)"
             r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"  # AWS access key id
             r"|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"  # GitHub
