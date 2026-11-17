@@ -296,9 +296,11 @@ def turn_off_locally(client: str) -> None:
     write_consent(client, False, off_by="site")
 
 
-def follow_site(client: str, on: object) -> None:
-    """The opening said whether the site takes this device's 收錄 (`capture`): one he turned off on the website and
-    opened there again (重新開啟收錄) opens here too. Nothing else changes the file: a no he gave here stays."""
+def follow_site(client: str, on: object, off_by: object = None) -> None:
+    """The opening said whether the site takes this device's 收錄 (`capture`) and who turned it off (`captureOffBy`):
+    one he turned off on the website and opened there again (重新開啟收錄) opens here too; one he took back there
+    goes off here at once, without waiting for an upload to be refused (Codex kept showing it on). Nothing else
+    changes the file: a no he gave here stays, and a pause of this device's own is not the site's."""
     try:
         record = read_json(consent_path(client))
     except MissError:
@@ -306,6 +308,8 @@ def follow_site(client: str, on: object) -> None:
     kept = cast("dict[str, object]", record) if isinstance(record, dict) else {}
     if on is True and kept.get("on") is False and kept.get("offBy") == "site":
         write_consent(client, True)
+    elif on is False and off_by == "site" and kept.get("on") is True:
+        turn_off_locally(client)
 
 
 def set_switch(client: str, on: bool) -> str:
@@ -911,7 +915,7 @@ def fetch_text(request: urllib.request.Request, deadline_s: float, client: str =
     body = fetch_json(request, deadline_s)
     fields = cast("dict[str, object]", body) if isinstance(body, dict) else {}
     if client:
-        follow_site(client, fields.get("capture"))
+        follow_site(client, fields.get("capture"), fields.get("captureOffBy"))
     text, receipt = fields.get("text"), fields.get("receipt")
     if not isinstance(text, str):
         raise MissError("bad_response")
