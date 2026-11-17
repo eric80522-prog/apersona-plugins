@@ -289,13 +289,13 @@ def stop_for_good(f: Failure) -> str:
     "Why a 永久 refusal will not get better by running it again, and what to do instead, in the owner's words."
     said = "\n" + fenced(f.said) if f.said else ""
     if f.status == 401:
-        return "停下，不用再試：登入失效了；執行 /apersona:login 重新登入（舊金鑰就到網站設定頁重發一把）" + said
+        return "停下，不用再試：登入失效了；執行 /apersona:login 重新登入" + said
     if f.status == 403:
         return "停下，不用再試：網站不認這個同意（上傳的內容跟同意的那一句對不上）；重跑 ask 再問本人" + said
     if f.status == 404:
         return (
             "停下，不用再試：網站找不到這個人格或這次上傳，或這個登入開不了它；"
-            "重新執行 /apersona:login（舊金鑰就檢查 persona 與金鑰）" + said
+            "重新執行 /apersona:login，再從 ask 開始" + said
         )
     if f.status == 409:
         return "停下：網站說這次上傳現在不能這樣做" + said
