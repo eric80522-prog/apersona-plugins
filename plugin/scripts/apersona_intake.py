@@ -632,6 +632,12 @@ def _agreeable(answers: list[dict[str, object]]) -> list[dict[str, object]]:
     return [a for a in answers if a.get("consentSha256") and not a.get("heldOnly")]
 
 
+def into_line(answers: list[dict[str, object]]) -> list[str]:
+    "「送進人格：…」 when his account has more than one persona (the site then names it, `into`); none otherwise."
+    into = sorted({str(a["into"]) for a in answers if a.get("into")})
+    return ["送進人格：" + "、".join(into)] if into else []
+
+
 def said(
     answers: list[dict[str, object]],
     local: dict[str, str],
@@ -647,9 +653,9 @@ def said(
     for a in answers:
         for row in cast("list[dict[str, object]]", a.get("unreadableParts") or []):
             why[str(row.get("reason"))] = why.get(str(row.get("reason")), 0) + int(cast(int, row.get("count") or 0))
-    found = [f"收到 {len(files)} 份，{readable} 段能讀"]
+    found = into_line(answers) + [f"收到 {len(files)} 份，{readable} 段能讀"]
     if why:
-        found[0] += f"，{sum(why.values())} 段讀不了（" + "、".join(f"{k} {n}" for k, n in why.items()) + "）"
+        found[-1] += f"，{sum(why.values())} 段讀不了（" + "、".join(f"{k} {n}" for k, n in why.items()) + "）"
     deleted: list[str] = []
     for f in files:
         name = local.get(str(f.get("name")), "（不明的檔）")
