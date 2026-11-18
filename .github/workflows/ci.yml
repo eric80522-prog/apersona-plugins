@@ -29,3 +29,16 @@ jobs:
           enable-cache: false
       - name: pytest
         run: uvx --python "${{ matrix.python }}" --no-config pytest -q -p no:cacheprovider tests
+
+  version:
+    # A pull request that changes plugin/ must raise the version: merging into main is a release.
+    name: version raised when plugin/ changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: check
+        run: python3 .github/scripts/version_bumped.py "origin/${{ github.base_ref }}"
