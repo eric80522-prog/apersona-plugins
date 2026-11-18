@@ -60,6 +60,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import sys
 import time
 import urllib.error
@@ -477,6 +478,17 @@ def per_tool(rows: list[dict[str, object]], tools: dict[str, str], held: list[tu
     return lines + [f"- 不送 {n} 份：{why}" for why, n in reasons.items()]
 
 
+def keep_as_asked(base: Path, relative: str, asked: Path) -> Path:
+    """His AI record as it is now, copied into `asked` (600) under the same relative name: a conversation still being
+    written grows after `ask`, and what goes is what he was shown, not what it became (no list to show again)."""
+    copy = asked / relative.lstrip("/")
+    private_dir(copy.parent)
+    descriptor = os.open(str(copy), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(read_bytes(base / relative))
+    return copy
+
+
 def ask(folder: Path | None, work: Path, large: bool) -> int:
     """`ask`: what `send` would send, listed here; nothing of the files leaves the machine. No `folder`: his AI
     records (`ai_records`), listed per tool; the plan names them from his home folder (or in full, outside it)."""
@@ -503,16 +515,29 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
             return EXIT_ASK_FIRST
     probe = Masker([], []) if on else None  # only to learn which files could not go; nothing is coded or kept
     rows: list[dict[str, object]] = []
-    for relative in tools:
+    asked = work / "asked"
+    shutil.rmtree(str(asked), ignore_errors=True)
+    for relative in list(tools):
         path = base / relative
         _, why = prepared(path, probe, [])
         if why:
             held.append((relative, why))
             continue
+        if folder is None:  # a record outside his home folder is named in full; its copy is under `asked` all the same
+            path = keep_as_asked(base, relative, asked)
+            tools[path.relative_to(asked).as_posix()] = tools[relative]
+            relative = path.relative_to(asked).as_posix()
         rows.append({"path": relative, "size": path.stat().st_size, "sha256": digest(path)})
     write_json(
         work / "plan.json",
-        {"folder": str(base), "codes": on, "ai": folder is None, "files": rows, "held": held, "left_out": left_out},
+        {
+            "folder": str(base if folder is not None else asked),
+            "codes": on,
+            "ai": folder is None,
+            "files": rows,
+            "held": held,
+            "left_out": left_out,
+        },
     )
     total = sum(int(cast(int, r["size"])) for r in rows)
     lines = [f"還沒送出任何東西。本人同意後，會把這 {len(rows)} 份（共 {size_text(total)}）送到 {site}："]
