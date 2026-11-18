@@ -17,8 +17,8 @@ Rules for every agent and every contributor in this repo. `AGENTS.md` is a symli
 - The user's explicit instruction in the session wins.
 - A change the backend also has to make is paired work: one branch name in both repos and a pull request in each. The
   backend PR merges first; this one merges after its own checks and the paired backend PR are green.
-- A plugin manager updates by version: a change to what users install carries a version bump in the plugin's manifest,
-  in the same PR.
+- A plugin manager updates by version: a change to what users install raises the version in the manifest of each
+  package it changes, in the same PR; CI checks it.
 - Everything here is public. Nothing may name the private repo, its paths or its people; a test checks the plugin
   folder for it.
 - The scripts run on the user's own machine and Python, the oldest supported version included, with the standard
