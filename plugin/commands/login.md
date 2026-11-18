@@ -9,7 +9,7 @@ Log the owner in once on this machine. Only the system's `python3` is needed; no
 3. `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_login.py" status` says whether this machine is logged in. Never print or read the credentials file (`~/.apersona/plugin-credentials.json`) back to him.
 4. The login ends with a line that starts 「接通實測」: it asked the site for the 開場包 once with the new login. Tell him that line as printed. If it says 「沒過」, run the `status` command of step 3 and tell him what it says before going on.
 5. When it is done, tell him, in these words:
-   - 登入好了。下一個對話起，開場會帶你的代答授權、你的更正、你要 AI 怎麼跟你說話，與你的長期規矩；其他記憶與判讀要用時我再叫 `recall`、`lookup` 拿。
+   - 登入好了。下一個對話起，開場會帶你的代答授權、你的更正、你要 AI 怎麼跟你說話，與你的長期規矩；你推翻代答時打的那一句（只有那一句，秘密先遮）會存在網站，列進「學到的」等你按提取才算；其他記憶與判讀要用時我再叫 `recall`、`lookup` 拿。
    - 開新對話時，開場包只拿不送你的字；需要記憶時我會自己叫 `recall`。不想要開場包就 `/apersona:off`。
    - 收錄（把你親手打的字收進素材）預設關。要開有兩條路：你本人在自己的終端機執行下面這一行，看過同意書後親手打「我同意」；或你明說授權我，我就用 `--by-agent` 帶上你那句原話代你開（開之前我會先跟你說一聲會送出什麼）。代開會記成「由 AI 工具代開」、寄通知信給你，網站「裝置」頁可一鍵撤回：
      `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_hook.py" --consent yes`

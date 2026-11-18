@@ -470,6 +470,8 @@ def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None
 STAND_IN_SAID_CHARS = 2_000
 STAND_IN_NEXT_CHARS = 400
 STAND_IN_SESSIONS = 20
+#: the line the site's authorization asks his AI to start its reply with when what he typed takes the last 代答 back
+OVERTURN_MARK = "〈推翻代答〉"
 STAND_IN_OFF_NOTICE = "Apersona：代答被你推翻的比例過高，已自動關掉代答（開場的規矩照舊）。/apersona:on 重新打開。"
 
 
@@ -517,11 +519,26 @@ def list_left(rows: list[dict[str, object]]) -> tuple[int, str]:
     return len(left), str(left[0].get("content", "")) if left else ""
 
 
+def said_took_back(rows: list[dict[str, object]], after: str) -> bool:
+    """Whether his AI, after what he typed in row `after` (its uuid) and before he typed again, started a reply with
+    `OVERTURN_MARK`: the AI that read his words says whether they take the last 代答 back; no word table judges it."""
+    marked = marks_origin(rows)
+    start = next((n for n, row in enumerate(rows) if str(row.get("uuid", "")) == after), None)
+    for row in rows[start + 1 :] if start is not None else []:
+        if typed_text(row, marked):
+            return False
+        if row.get("type") == "assistant" and not row.get("isSidechain"):
+            if block_text(content_blocks(row)).lstrip().startswith(OVERTURN_MARK):
+                return True
+    return False
+
+
 def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> str:
     """做完自己接下去: what the Stop hook prints so the AI goes on with the next item, or "" to let it stop
     and wait for him. The site decides and keeps the counts (its one table of major matters, its own record of the
     answers; no model); this only sends the end of the AI's last words, how much of its list is left, this
-    conversation, and the first thing he typed since the last stop. `stand_in.json` keeps where each conversation was
+    conversation, the first thing he typed since the last stop, and whether his AI said that took the last 代答 back
+    (`said_took_back`). `stand_in.json` keeps where each conversation was
     read up to and whether its last stop got a 代答, whether 代答 went off, and the site's totals it last gave
     (`apersona_stats` prints them). With no list left the site is still told his first words after the last 代答, so
     a take-back after the list's last item counts. Off, no list left, no answer in time or anything unreadable is "":
@@ -555,6 +572,7 @@ def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> s
     }
     if since:  # the first thing he typed since the last stop: the site marks its last answer, taken back or not
         ask["ownerNext"] = redact_secrets(since[0][1][:STAND_IN_NEXT_CHARS])
+        ask["tookBack"] = said_took_back(rows, since[0][0])
     request = urllib.request.Request(
         site.rstrip("/") + "/api/memory/stand-in",
         data=json.dumps(ask).encode("utf-8"),
