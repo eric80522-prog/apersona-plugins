@@ -5,6 +5,8 @@
     claude plugin marketplace add eric80522-prog/apersona-plugins
     claude plugin install apersona@apersona
 
+Claude Code 不會自己更新第三方外掛庫的外掛（官方預設只有 Anthropic 自己的庫自動更新）。要自動更新：在 Claude Code 打 `/plugin`，到 Marketplaces 分頁選 `apersona`，選 Enable auto-update。沒打開時手動更新：`claude plugin marketplace update apersona`，再 `claude plugin update apersona@apersona`，重開 Claude Code。外掛比網站要的舊時，開場包第一行會寫「〈外掛有新版〉」；太舊的網站不接，回 `plugin_too_old`。
+
 裝完先在 Claude Code 打 `/apersona:login`，照畫面上的網址與代碼到瀏覽器按「允許」（裝置碼登入，開場包的 hook 靠它）。授權頁會印出這台連到的人格名稱（帳號有好幾個人格時可以選），並寫明：只有這台電腦上的外掛，用你的帳號做查詢、回報、上傳與修改，別人不能用。
 
 0.2.3 起，Claude Code 外掛內的 MCP 工具與 hook 共用這次裝置登入。外掛用本機 Python 標準函式庫將 stdio JSON-RPC 轉送到網站 `/mcp`，不另開第二筆 OAuth 授權。登入存在這台的 `~/.apersona/plugin-credentials.json`（資料夾 700、檔案 600；Windows 沿用資料夾權限）。沒登入時 hook 不擋提問，MCP 回覆需要先登入；已安裝舊版者更新外掛後重新開啟 Claude Code，讓它重新載入 MCP 設定。
