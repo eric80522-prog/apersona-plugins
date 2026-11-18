@@ -480,7 +480,8 @@ def per_tool(rows: list[dict[str, object]], tools: dict[str, str], held: list[tu
 
 def keep_as_asked(base: Path, relative: str, asked: Path) -> Path:
     """His AI record as it is now, copied into `asked` (600) under the same relative name: a conversation still being
-    written grows after `ask`, and what goes is what he was shown, not what it became (no list to show again)."""
+    written grows after `ask`, and what goes is what he was shown, not what it became (no list to show again).
+    `send` deletes the copies once they are up (`drop_copies`)."""
     copy = asked / relative.lstrip("/")
     private_dir(copy.parent)
     descriptor = os.open(str(copy), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -647,9 +648,22 @@ def send(work: Path, names_file: Path | None, me: list[str], read: bool = False,
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
     left_out = 0 if take else int(cast(int, plan.get("left_out") or 0))
     print(said(answers, local, held, left_out, asking=not read))
+    if plan.get("ai") is True:
+        drop_copies(work, answers)
     if read and _agreeable(answers):
         return consent(work, True)
     return 0
+
+
+def drop_copies(work: Path, answers: list[dict[str, object]]) -> None:
+    """The copies of his AI records `ask` made, deleted now they are up, so his conversations are not kept twice here;
+    kept while the site held parts he had deleted, since --take-deleted sends from them (the next `ask` clears them)."""
+    files = [cast("dict[str, object]", f) for a in answers for f in cast("list[object]", a.get("files") or [])]
+    if any(f.get("held") for f in files):
+        print(f"本機的對話複本先留著（{work / 'asked'}），等本人決定要不要收回刪過的那幾份；下次 ask 會清掉。")
+        return
+    shutil.rmtree(str(work / "asked"), ignore_errors=True)
+    print("送出的對話複本已從本機刪掉。")
 
 
 def _agreeable(answers: list[dict[str, object]]) -> list[dict[str, object]]:
