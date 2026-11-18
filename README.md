@@ -30,6 +30,8 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
     claude plugin marketplace add eric80522-prog/apersona-plugins
     claude plugin install apersona@apersona
 
+裝好後打開自動更新（在 Claude Code 打 `/plugin`，到 Marketplaces 分頁選 `apersona`，選 Enable auto-update），不然新版要手動更新，見 [plugin/README.md](plugin/README.md)。
+
 第一行把這個庫登記為外掛來源（`apersona`），不安裝任何東西；第二行安裝其中的 `apersona` 外掛，裝了：
 
 - MCP 伺服器 `apersona`：本機 stdio 轉送到網站，與 hook 共用裝置登入，不另建 OAuth 授權。
