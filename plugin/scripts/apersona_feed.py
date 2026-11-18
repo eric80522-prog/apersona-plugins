@@ -8,7 +8,8 @@ no words at all. Claude and Codex keep their own paths in `apersona_hook.py`; no
     python apersona_feed.py send --platform P --session S --id ID (--text T | --text-file F)
     python apersona_feed.py flush|status --platform P
     python apersona_feed.py consent --platform P yes|no [--by-agent]
-    python apersona_feed.py setup --platform P [--site URL]
+    python apersona_feed.py setup --platform P [--site URL]      (cursor: also puts its hooks in ~/.cursor/hooks.json)
+    python apersona_feed.py uninstall --platform cursor           (takes them out; nobody else's are touched)
 
 What each platform may send:
 
@@ -47,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apersona_hook as hook  # noqa: E402
 from apersona_mask import redact_secrets  # noqa: E402
 from apersona_projects import allows  # noqa: E402
-from apersona_safe import EXIT_FAILED, EXIT_UNFINISHED, exit_line, read_json, terminal_input  # noqa: E402
+from apersona_safe import EXIT_FAILED, EXIT_UNFINISHED, exit_line, read_json, terminal_input, write_replacing  # noqa: E402,E501
 
 #: his consent text per platform; the site holds the same words (`memory/conversation.py`) and checks the hash
 CONSENT_TEXTS = {
@@ -88,6 +89,35 @@ QUIET_OUTPUT = {"cursor": {"beforeSubmitPrompt": {"continue": True}}}
 
 def data_dir(platform: str) -> Path:
     return Path.home() / ".apersona" / platform
+
+
+#: the Cursor events this script answers (`sessionStart` the opening, `beforeSubmitPrompt` keeps the prompt, `stop`
+#: sends it), put into his user-level hooks file (`{"version": 1, "hooks": {event: [{"command": ...}]}}`)
+CURSOR_EVENTS = ("sessionStart", "beforeSubmitPrompt", "stop")
+
+
+def _our_cursor_hook(entry: object) -> bool:
+    command = cast("dict[str, object]", entry).get("command") if isinstance(entry, dict) else None
+    return isinstance(command, str) and "apersona_feed.py" in command and "--platform cursor" in command
+
+
+def place_cursor_hooks(on: bool) -> Path:
+    """Our three Cursor hooks merged into ~/.cursor/hooks.json (`on`) or taken out, with a backup of the file first;
+    every other hook in it stays as it was. The command names this script and this python by absolute path."""
+    path = Path.home() / ".cursor" / "hooks.json"
+    given = read_json(path, {"version": 1, "hooks": {}})
+    data = cast("dict[str, object]", given) if isinstance(given, dict) else {}
+    if not isinstance(data.get("hooks"), dict):
+        raise ValueError(f"{path} 的格式不是 Cursor 的 hooks 檔（最外層要有 hooks）")
+    hooks = cast("dict[str, list[object]]", data["hooks"])
+    ours = f"{json.dumps(sys.executable)} {json.dumps(str(Path(__file__).resolve()))} hook --platform cursor"
+    for event in CURSOR_EVENTS:
+        kept = [h for h in hooks.get(event) or [] if not _our_cursor_hook(h)]
+        hooks[event] = [*kept, {"command": ours}] if on else kept
+        if not hooks[event]:
+            del hooks[event]
+    write_replacing(path, (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), backup=True)
+    return path
 
 
 def consent(platform: str) -> dict[str, object]:
@@ -462,10 +492,11 @@ def say(status: str, error: str = "") -> int:
     return code
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
+    "Every command and what it takes (the module docstring lists them)."
     parser = argparse.ArgumentParser(prog="apersona_feed.py")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("hook", "send", "flush", "status", "consent", "setup"):
+    for name in ("hook", "send", "flush", "status", "consent", "setup", "uninstall"):
         command = commands.add_parser(name)
         command.add_argument("--platform", required=True, choices=sorted([*CONSENT_TEXTS, *NO_CAPTURE]))
         if name == "hook":
@@ -481,7 +512,28 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--owner-words", default="", help="--by-agent 時：本人說要開收錄的那句原話")
         if name == "setup":
             command.add_argument("--site", default="")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def _install(platform: str, command: str, site: str) -> int:
+    "`setup`: the site kept (Cursor: its hooks put in his hooks file too); `uninstall`: Cursor's hooks taken out."
+    if command == "setup":
+        data = data_dir(platform)
+        data.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (data / "config.json").write_text(json.dumps({"site": site}), encoding="utf-8")
+        if platform == "cursor":
+            print(f"已把開場、收字、送出三個 hook 放進 {place_cursor_hooks(True)}（原檔先備份）；重開 Cursor 生效。")
+        print("已記下網站；收錄預設關，要開請執行 consent yes。")
+        return 0
+    if platform != "cursor":
+        print("只有 Cursor 的 hook 由這裡放；其他平台請用該工具自己的外掛管理移除。")
+        return EXIT_FAILED
+    print(f"已從 {place_cursor_hooks(False)} 拿掉 Apersona 的 hook（原檔先備份）；收錄同意與登入不動。")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     platform: str = args.platform
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
@@ -490,12 +542,8 @@ def main(argv: list[str] | None = None) -> int:
         return say("no_capture")  # nothing of his is taken here, so there is nothing to agree to or send
     if args.command == "consent":
         return answer_consent(platform, args.answer, args.by_agent, args.owner_words)
-    if args.command == "setup":
-        data = data_dir(platform)
-        data.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (data / "config.json").write_text(json.dumps({"site": args.site}), encoding="utf-8")
-        print("已記下網站；收錄預設關，要開請執行 consent yes。")
-        return 0
+    if args.command in ("setup", "uninstall"):
+        return _install(platform, args.command, getattr(args, "site", ""))
     if args.command == "status" and platform in NO_CAPTURE:
         print("收錄：此平台不收字（只接開場）")
         return 0

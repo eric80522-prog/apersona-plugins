@@ -204,7 +204,7 @@ Windows 若 Python 命令是 `python`，將上面的 `python3` 換成 `python`�
 
 `scripts/apersona_feed.py`。這些平台沒有可信的「這是本人新打的一句」識別，所以不自動收：本人自己 `send`，並自己給這一輪的 `--id`；沒給就回 `id_required`，什麼都不存不送。Gemini 的 BeforeAgent hook 同樣回 `id_required`，AfterAgent 與工具前事件只負責叫醒送出已同意的待送列，模型回答與工具參數一律不收。每個平台有自己的同意書（`consent --platform … yes`，在終端機親手打「我同意」，或你授權的 AI 工具加 `--by-agent --owner-words "<你的原話>"` 代開，規則同 Claude Code：先登記到伺服器、寄通知信、網站裝置頁可撤回，撤回後下一次送出就把本機同意關掉），`consent … no` 立刻關並清掉待送。
 
-Cursor 例外：它的 `beforeSubmitPrompt` 帶本人送出的那句與 `generation_id`，所以 `--platform cursor` 的 hook 自動收：送出時先遮秘密存在本機待送列，輪次識別是 `cursor:<conversation_id>:<generation_id>`，`stop` 事件才送；沒有 `generation_id` 就什麼都不存。`sessionStart` 把開場包放進 `additional_context`。收錄預設關，`consent --platform cursor yes` 在終端機親手打「我同意」。Antigravity 只接 `SessionStart`（開場包放進 `injectSteps`），不收字、沒有同意書；它的 stdin 沒有事件名，hook 指令要加 `--event SessionStart`。本人自己把 hook 指令填進該工具的設定檔（Cursor `.cursor/hooks.json`，Antigravity `.agents/hooks.json`），外掛不寫。
+Cursor 例外：它的 `beforeSubmitPrompt` 帶本人送出的那句與 `generation_id`，所以 `--platform cursor` 的 hook 自動收：送出時先遮秘密存在本機待送列，輪次識別是 `cursor:<conversation_id>:<generation_id>`，`stop` 事件才送；沒有 `generation_id` 就什麼都不存。`sessionStart` 把開場包放進 `additional_context`。收錄預設關，`consent --platform cursor yes` 在終端機親手打「我同意」。Antigravity 只接 `SessionStart`（開場包放進 `injectSteps`），不收字、沒有同意書；它的 stdin 沒有事件名，hook 指令要加 `--event SessionStart`。Cursor 跑 `python3 scripts/apersona_feed.py setup --platform cursor` 就把三個 hook 合併進 `~/.cursor/hooks.json`（你自己的 hook 不動、原檔先備份；`uninstall --platform cursor` 拿掉）；Antigravity 由本人自己把 hook 指令填進 `.agents/hooks.json`，外掛不寫。
 
 ## 只停用一個專案
 

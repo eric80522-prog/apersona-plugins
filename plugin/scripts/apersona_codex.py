@@ -25,20 +25,24 @@ import json
 import os
 import shlex
 import sys
-import uuid
-from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apersona_login  # noqa: E402
-from apersona_safe import EXIT_FAILED, checked_site, exit_line, private_dir, terminal_input  # noqa: E402
+from apersona_safe import (  # noqa: E402
+    EXIT_FAILED,
+    checked_site,
+    exit_line,
+    private_dir,
+    terminal_input,
+    write_replacing,
+)
 
 HOOK_NAME = "apersona_hook.py"
 #: what the hook imports from beside itself, copied with it
 HOOK_SIBLINGS = ("apersona_mask.py", "apersona_safe.py", "apersona_login.py", "apersona_projects.py")
-BACKUP_TAG = ".apersona-backup-"
 # (Codex event, hook kind, timeout in seconds, additionalContextLimit in tokens). Codex cuts a hook's additionalContext
 # past about 2,500 tokens by default into a head-and-tail preview (https://developers.openai.com/codex/hooks, read
 # 2026-11-07); the hook itself already cuts at MAX_TEXT = 8,000 characters, from the end. A Chinese character can take
@@ -50,7 +54,6 @@ EVENTS = (
     ("UserPromptSubmit", "turn", 5, CONTEXT_LIMIT),
     ("Stop", "stop", 10, 0),
 )
-CONSENT_PHRASE = "我同意"
 
 
 class InstallError(Exception):
@@ -148,42 +151,6 @@ def render_hooks(data: dict[str, object], groups: list[tuple[str, dict[str, obje
     for event, group in groups:
         hooks[event] = [*cast("list[object]", hooks.get(event, [])), group]
     return json.dumps({**data, "hooks": hooks}, indent=2, ensure_ascii=False) + "\n"
-
-
-def create_backup(path: Path, old: bytes) -> Path:
-    "Copy `old` to <name>.apersona-backup-<stamp>[-N]; an earlier backup is never overwritten."
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    count = 1
-    while True:
-        backup = path.with_name(f"{path.name}{BACKUP_TAG}{stamp}" + ("" if count == 1 else f"-{count}"))
-        try:
-            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            count += 1
-            continue
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(old)
-        return backup
-
-
-def write_replacing(path: Path, data: bytes, *, backup: bool = False, private: bool = False) -> Path | None:
-    "Replace the file whole (temp file, then rename), after a backup of the old one when asked. Returns the backup."
-    made = create_backup(path, path.read_bytes()) if backup and path.exists() else None
-    mode = 0o600 if private or not path.exists() else path.stat().st_mode & 0o777
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if os.name != "nt":
-            os.chmod(temp, mode)
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-    return made
 
 
 def checked_site_of(site: str) -> str:
@@ -354,12 +321,12 @@ def ask_consent(script: Path) -> bool:
     print("要不要開啟收錄？目前是" + ("開" if was_on else "關") + "。同意書：")
     print("  " + hook.CODEX_CONSENT_TEXT)
     try:
-        answer = input(f"要開，請輸入「{CONSENT_PHRASE}」；其他任何輸入都是不開：").strip()
+        answer = input(f"要開，請輸入「{hook.CONSENT_PHRASE}」；其他任何輸入都是不開：").strip()
     except EOFError:
         answer = ""
     except OSError:
         answer = ""
-    if answer != CONSENT_PHRASE:
+    if answer != hook.CONSENT_PHRASE:
         if not record_consent(script, "no"):
             print("記錄「不同意」失敗；請執行 " + run_it + " no 確認收錄是關的。")
             return was_on
