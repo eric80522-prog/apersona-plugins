@@ -18,38 +18,46 @@ from typing import Final, cast
 SECRET: Final = "[秘密已遮]"
 #: a value after `key =`／`key:`／`密碼：`: quoted (spaces and all) or up to a space or a comma of either width
 _VALUE: Final = r"(?:\"[^\"\n]*\"|'[^'\n]*'|「[^」\n]*」|“[^”\n]*”|[^\s,;，；。、]+)"
+# These two shapes historically also protect mixed-script values. Prefer a match ending before Han prose;
+# keep a non-ASCII fragment inside a value when more token text follows it. A wholly ambiguous value stays masked.
+_SK_BODY: Final = r"(?u:[\w-]{12,})"
+_BEARER_BODY: Final = r"(?u:[\w./+=-]+)"
+_BEFORE_HAN_PROSE: Final = r"(?<![㐀-鿿豈-﫿])"
 _SECRETS: Final = (
     # key blocks, PGP's included: `-----BEGIN … PRIVATE KEY[ BLOCK]-----` to its end line
     (re.compile(r"(?s)-----BEGIN [^-\n]*PRIVATE KEY[^-\n]*-----.*?-----END [^-\n]*PRIVATE KEY[^-\n]*-----"), SECRET),
     # the password part of `scheme://user:password@host`; the user and host stay
-    (re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)"), r"\1" + SECRET + r"\2"),
+    (re.compile(r"(?i)((?a:\b)[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)"), r"\1" + SECRET + r"\2"),
     # an Authorization header, whatever its scheme (Basic, Bearer, Token, Digest)
     (
         re.compile(r"(?im)(authorization[\"']?\s*[:=：]\s*)(?:(?:basic|bearer|token|digest)\s+)?" + _VALUE),
         r"\1" + SECRET,
     ),
-    # credential shapes recognised by their own look
-    (
-        re.compile(
-            r"(?:\bsk-[\w-]{12,}"  # OpenAI and the like
-            r"|apersona_(?:token|at|rt)_[A-Za-z0-9_-]+"  # this site's own keys, access and refresh tokens
-            r"|(?i:\bBearer\s+[\w./+=-]+)"
-            r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"  # AWS access key id
-            r"|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"  # GitHub
-            r"|\bxox[abpr]-[A-Za-z0-9-]{10,}"  # Slack
-            r"|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}"  # Stripe
-            r"|\bAIza[0-9A-Za-z_-]{35}"  # Google API key
-            r"|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})"  # JWT
-        ),
-        SECRET,
-    ),
     # `api_key=…`, `aws_secret_access_key = "…"`, `"password": "…"`, `密碼：…`: the value goes, the name stays
     (
         re.compile(
             r"(?im)((?:api[_-]?key|token|passw(?:or)?d|secret|credential|private[_-]?key|密碼|密码|口令|金鑰|密鑰|私鑰)"
-            r"[\w.-]{0,40}[\"']?\s*[:=：]\s*)" + _VALUE
+            r"[\w.-]{0,40}[\"']?\s*"
+            # In 金鑰是https://user:…@host the URL pass already hid the password; its colon is not an assignment.
+            rf"(?!://[^\s:/@]+:{re.escape(SECRET)}@)[:=：]\s*)" + _VALUE
         ),
         r"\1" + SECRET,
+    ),
+    # credential shapes recognised by their own look
+    (
+        re.compile(
+            rf"(?:\bsk-(?:{_SK_BODY}{_BEFORE_HAN_PROSE}|{_SK_BODY})"
+            r"|apersona_(?:token|at|rt)_[A-Za-z0-9_-]+"
+            rf"|(?i:\bBearer)(?u:\s+)(?:{_BEARER_BODY}{_BEFORE_HAN_PROSE}|{_BEARER_BODY})"
+            r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+            r"|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"
+            r"|\bxox[abpr]-[A-Za-z0-9-]{10,}"
+            r"|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}"
+            r"|\bAIza[0-9A-Za-z_-]{35}"
+            r"|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})",
+            re.ASCII,
+        ),
+        SECRET,
     ),
 )
 #: a JSON key whose value is a secret whatever it looks like (`client_secret`, `refresh_token`, `apiKey`, `password`);
