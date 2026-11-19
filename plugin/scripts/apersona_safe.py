@@ -29,6 +29,7 @@ import uuid
 from datetime import datetime
 from email.message import Message
 from http.client import HTTPResponse
+from io import TextIOWrapper
 from pathlib import Path
 from typing import IO, Final, cast
 
@@ -68,6 +69,13 @@ def read_json(path: Path, default: object = None) -> object:
         return default
     except ValueError:  # separate clauses keep Python 3.9 syntax under newer formatters
         return default
+
+
+def utf8_pipes() -> None:
+    """AI clients send and receive UTF-8 over pipes, even under a legacy Windows locale."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper) and not stream.isatty():
+            stream.reconfigure(encoding="utf-8")
 
 
 def terminal_input() -> bool:

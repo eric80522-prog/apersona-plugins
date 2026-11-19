@@ -50,6 +50,7 @@ from apersona_safe import (  # noqa: E402
     open_url,
     private_dir,
     read_json,
+    utf8_pipes,
 )
 
 DEFAULT_SITE = "https://www.apersonaai.com"
@@ -568,4 +569,5 @@ def _main(args: argparse.Namespace) -> int:
 
 
 if __name__ == "__main__":
+    utf8_pipes()
     raise SystemExit(main())
