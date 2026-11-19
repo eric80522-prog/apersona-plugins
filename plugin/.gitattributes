@@ -1,1 +1,3 @@
 *.sh text eol=lf
+scripts/apersona_ignore.py text eol=lf
+scripts/apersona_mask.py text eol=lf
