@@ -32,7 +32,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -49,6 +50,7 @@ from apersona_safe import (  # noqa: E402
     open_url,
     private_dir,
     read_json,
+    utf8_pipes,
 )
 
 DEFAULT_SITE = "https://www.apersonaai.com"
@@ -282,13 +284,46 @@ def _take_lock(wait_s: float, clock: Callable[[], float], sleep: Callable[[float
                 if time.time() - lock.stat().st_mtime > LOCK_STALE_S:  # a trade that died holding it
                     lock.unlink()
                     continue
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError:
+                return False
         except OSError:
             return False
         if clock() >= end:
             return False
         sleep(0.05)
+
+
+@contextmanager
+def _refresh_lock(wait_s: float, clock: Callable[[], float], sleep: Callable[[float], None]) -> Iterator[None]:
+    """The OS releases this lock when its process exits. Keep the older sentinel while trading for older clients."""
+    marker = _lock_path()
+    private_dir(marker.parent)
+    fd = os.open(str(marker.with_suffix(".guard")), os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+b") as stream:
+        end = time.monotonic() + wait_s
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= end:
+                    raise LoginError("login_busy", "另一個程序正在換通行證") from None
+                sleep(0.05)
+        if not _take_lock(max(0.0, end - time.monotonic()), clock, sleep):
+            raise LoginError("login_busy", "另一個程序正在換通行證")
+        try:
+            yield
+        finally:
+            marker.unlink(missing_ok=True)
 
 
 def site_of(given: str = "") -> str:
@@ -320,21 +355,17 @@ def bearer(
         return access
     if not isinstance(client_id, str):
         raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
-    if not _take_lock(min(LOCK_WAIT_S, timeout_s), clock, sleep):
-        raise LoginError("login_busy", "另一個程序正在換通行證")
-    try:
+    observed_refresh = refresh
+    with _refresh_lock(timeout_s, clock, sleep):
         record = read_credentials()  # the one that held the lock may have traded already: use its pair
         access, refresh = record.get("access"), record.get("refresh")
-        if not (isinstance(access, str) and isinstance(refresh, str)):
+        if record.get("site") != site or not (isinstance(access, str) and isinstance(refresh, str)):
             raise LoginError("not_logged_in", "還沒登入；執行 /apersona:login")
-        if not _due(trade, float(cast("float", record.get("expires_at") or 0)) - clock()):
+        if refresh != observed_refresh or not _due(
+            trade, float(cast("float", record.get("expires_at") or 0)) - clock()
+        ):
             return access
         return _refresh_tokens(site, record, timeout_s, clock)
-    finally:
-        try:
-            _lock_path().unlink()
-        except OSError:
-            pass
 
 
 def _wait_for_trade(
@@ -532,10 +563,11 @@ def _main(args: argparse.Namespace) -> int:
         return EXIT_FAILED
     if done:
         print(f"登入好了（{site}）。下一個對話起，開場包就會帶本人的記憶。")
-        print(f"這台只多了一個檔：{credentials_path()}；/apersona:logout 會刪掉它並在網站登出這台。")
+        print(f"這台的登入憑證存在 {credentials_path()}；/apersona:logout 會刪掉它並在網站登出這台。")
         print(connection_check(site))
     return 0 if done else EXIT_UNFINISHED
 
 
 if __name__ == "__main__":
+    utf8_pipes()
     raise SystemExit(main())
