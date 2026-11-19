@@ -533,6 +533,13 @@ def said_took_back(rows: list[dict[str, object]], after: str) -> bool:
     return False
 
 
+def stand_in_counts(given: object, taken_back: object) -> tuple[int, int] | None:
+    """Only a complete pair from the server is a count; old or damaged cache entries have no measurement."""
+    if type(given) is int and type(taken_back) is int and 0 <= taken_back <= given:
+        return given, taken_back
+    return None
+
+
 def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> str:
     """做完自己接下去: what the Stop hook prints so the AI goes on with the next item, or "" to let it stop
     and wait for him. The site decides and keeps the counts (its one table of major matters, its own record of the
@@ -589,7 +596,9 @@ def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> s
     counts = reply.get("counts")
     if isinstance(counts, dict):  # the site's totals, for apersona_stats to print without going online
         kept_counts = cast("dict[str, object]", counts)
-        state["stood_in"], state["overturned"] = kept_counts.get("given", 0), kept_counts.get("takenBack", 0)
+        totals = stand_in_counts(kept_counts.get("given"), kept_counts.get("takenBack"))
+        if totals is not None:
+            state["stood_in"], state["overturned"] = totals
     state["off"] = verdict == "overturned_often"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")

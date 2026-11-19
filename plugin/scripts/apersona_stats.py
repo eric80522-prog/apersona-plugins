@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from apersona_hook import block_text, content_blocks, marks_origin, transcript_rows, typed_text  # noqa: E402
+from apersona_hook import (
+    block_text,
+    content_blocks,
+    marks_origin,
+    stand_in_counts,
+    transcript_rows,
+    typed_text,
+)  # noqa: E402
 from apersona_ignore import Walk  # noqa: E402
 
 #: two of his messages say the same when this share of their character pairs is common to both
@@ -149,9 +156,12 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             kept = {}
         counts = cast("dict[str, object]", kept) if isinstance(kept, dict) else {}
-        given, taken_back = (int(cast("int", counts.get(k, 0))) for k in ("stood_in", "overturned"))
-        share = f"{100 * taken_back / given:.0f}%" if given else "—"
-        print(f"代答 {given} 次，被他推翻 {taken_back} 次（{share}）。")
+        totals = stand_in_counts(counts.get("stood_in"), counts.get("overturned"))
+        if totals is None or totals[0] == 0:
+            print("代答：還在累積。")
+        else:
+            given, taken_back = totals
+            print(f"代答 {given} 次，被他推翻 {taken_back} 次（{100 * taken_back / given:.0f}%）。")
     return 0
 
 

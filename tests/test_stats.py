@@ -59,3 +59,20 @@ def test_it_counts_his_typing_against_the_replies_he_sees_and_what_he_said_in_an
     assert [sum(day[i] for day in days.values()) for i in range(3)] == [3, 4, 1]
     assert stats.main(["--days", "30"]) == 0
     assert "每 100 則 AI 回覆他打 75.0 則；在別段對話講過的 1 則（33%）" in capsys.readouterr().out
+
+    cache = tmp_path / "apersona" / "stand_in.json"
+    cache.parent.mkdir()
+    for payload in (
+        None,
+        {},
+        {"stood_in": 4},
+        {"stood_in": False, "overturned": 0},
+        {"stood_in": 1, "overturned": 2},
+    ):
+        if payload is not None:
+            cache.write_text(json.dumps(payload), encoding="utf-8")
+        assert stats.main(["--plugin-data", str(tmp_path)]) == 0
+        assert capsys.readouterr().out.endswith("代答：還在累積。\n")
+    cache.write_text('{"stood_in":4,"overturned":0}', encoding="utf-8")
+    assert stats.main(["--plugin-data", str(tmp_path)]) == 0
+    assert "代答 4 次，被他推翻 0 次（0%）" in capsys.readouterr().out
