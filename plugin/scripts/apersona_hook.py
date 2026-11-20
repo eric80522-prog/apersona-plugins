@@ -325,6 +325,7 @@ def set_switch(client: str, on: bool) -> str:
     if on and client == "claude":
         data.mkdir(parents=True, exist_ok=True)
         (data / "stand_in.json").write_text("{}", encoding="utf-8")
+        (data / "stand-in-switch.json").write_text('{"on": true}', encoding="utf-8")
     said = "Apersona 已開" if on else "Apersona 已關"
     approval = consent(client)
     if not approval:
@@ -553,6 +554,9 @@ def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> s
     data = data_dir()
     said, session, transcript = (fields.get(k) for k in ("last_assistant_message", "session_id", "transcript_path"))
     if data is None or not isinstance(said, str) or not isinstance(session, str) or not isinstance(transcript, str):
+        return ""
+    preference = data / "stand-in-switch.json"
+    if preference.exists() and read_json(preference) != {"on": True}:
         return ""
     path = data / "stand_in.json"
     kept = read_json(path)
@@ -1439,6 +1443,30 @@ def switch_command(client: str, on: bool, project: str | None) -> int:
     return 0
 
 
+def stand_in_command(on: bool) -> int:
+    "Only the Stop reply; opening, capture consent and the global switch stay as they are."
+    data = data_dir()
+    if data is None:
+        print("找不到外掛的資料夾（CLAUDE_PLUGIN_DATA）", file=sys.stderr)
+        return EXIT_FAILED
+    try:
+        path = data / "stand_in.json"
+        state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(state, dict):
+            raise ValueError("bad state")
+        data.mkdir(parents=True, exist_ok=True)
+        if on:
+            state["sessions"] = {}  # words typed while paused are never reported as a later overturn
+            state["off"] = False
+            path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        (data / "stand-in-switch.json").write_text(json.dumps({"on": on}), encoding="utf-8")
+    except (OSError, ValueError):
+        print("代答設定沒有儲存，請檢查外掛資料夾。", file=sys.stderr)
+        return EXIT_FAILED
+    print("代答已" + ("開啟" if on else "停用") + "；開場包、收錄與總開關維持原設定。")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_hook.py")
     parser.add_argument("--kind", choices=("opening", "turn", "stop", "receipt"), default="opening")
@@ -1450,7 +1478,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--client", choices=("claude", "codex"), default="claude")
     parser.add_argument("--switch", choices=("on", "off"), help="整台開關；加 --project-directory 只這專案")
     parser.add_argument("--project-directory")
+    parser.add_argument("--stand-in", choices=("on", "off"), help="只切換 Claude Code 代答，保留開場包與收錄設定")
     args = parser.parse_args(argv)
+    if args.stand_in is not None:
+        if args.client != "claude" or args.switch is not None or args.consent is not None or args.project_directory:
+            parser.error("--stand-in 只用於 Claude Code，不能與總開關、收錄或專案開關混用")
+        return stand_in_command(args.stand_in == "on")
     if args.switch is not None:
         return switch_command(args.client, args.switch == "on", args.project_directory)
     if args.client == "codex" and args.kind == "receipt":
