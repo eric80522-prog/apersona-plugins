@@ -533,6 +533,13 @@ def said_took_back(rows: list[dict[str, object]], after: str) -> bool:
     return False
 
 
+def stand_in_counts(given: object, taken_back: object) -> tuple[int, int] | None:
+    """Only a complete pair from the server is a count; old or damaged cache entries have no measurement."""
+    if type(given) is int and type(taken_back) is int and 0 <= taken_back <= given:
+        return given, taken_back
+    return None
+
+
 def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> str:
     """做完自己接下去: what the Stop hook prints so the AI goes on with the next item, or "" to let it stop
     and wait for him. The site decides and keeps the counts (its one table of major matters, its own record of the
@@ -564,17 +571,21 @@ def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> s
     # nothing left on the list: the site is asked only to judge his first words after the last 代答 it gave here
     if not left and not (since and mine.get("answered") is True):
         return ""
+    visible = redact_secrets(said[-STAND_IN_SAID_CHARS:]).rstrip()
     ask: dict[str, object] = {
-        "said": redact_secrets(said[-STAND_IN_SAID_CHARS:]),
+        "said": visible,
         "left": left,
         "next": redact_secrets(item),
         "conversation": session,
     }
+    report = re.search(r"(?m)^〈(?:下一步|請決定)〉[^\n]*(?:\n\s*〈(?:下一步|請決定)〉[^\n]*)*\Z", visible)
+    if report:
+        ask["stopReportV1"] = report[0]
     if since:  # the first thing he typed since the last stop: the site marks its last answer, taken back or not
         ask["ownerNext"] = redact_secrets(since[0][1][:STAND_IN_NEXT_CHARS])
         ask["tookBack"] = said_took_back(rows, since[0][0])
     request = urllib.request.Request(
-        site.rstrip("/") + "/api/memory/stand-in",
+        site.rstrip("/") + ("/api/memory/stand-in/report" if report else "/api/memory/stand-in"),
         data=json.dumps(ask).encode("utf-8"),
         headers={"Authorization": "Bearer " + key, "Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
@@ -582,14 +593,17 @@ def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> s
     body = fetch_json(request, left_s)
     reply = cast("dict[str, object]", body) if isinstance(body, dict) else {}
     verdict, words = reply.get("verdict"), reply.get("text")
-    answered = verdict == "continue" and isinstance(words, str) and words.startswith("〈人格代答")
+    accepted = not report or reply.get("stopReportAccepted") is True
+    answered = accepted and verdict == "continue" and isinstance(words, str) and words.startswith("〈人格代答")
     sessions.pop(session, None)
     sessions[session] = {"last": seen[-1] if seen else "", "answered": answered}
     state["sessions"] = dict(list(sessions.items())[-STAND_IN_SESSIONS:])
     counts = reply.get("counts")
     if isinstance(counts, dict):  # the site's totals, for apersona_stats to print without going online
         kept_counts = cast("dict[str, object]", counts)
-        state["stood_in"], state["overturned"] = kept_counts.get("given", 0), kept_counts.get("takenBack", 0)
+        totals = stand_in_counts(kept_counts.get("given"), kept_counts.get("takenBack"))
+        if totals is not None:
+            state["stood_in"], state["overturned"] = totals
     state["off"] = verdict == "overturned_often"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
