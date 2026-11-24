@@ -34,12 +34,14 @@ SAME_SHARE = 0.8
 PASTE_CHARS = 2_000
 
 
-def claude_conversations() -> tuple[list[Path], int]:
-    """The main conversations Claude Code keeps on this machine, and how many an `.apersonaignore` there (or the
-    always-excluded names) left out; a subagent's file lives one folder deeper and is not one."""
+def claude_conversations() -> tuple[list[Path], int, list[tuple[str, str]]]:
+    """The main conversations Claude Code keeps on this machine, how many an `.apersonaignore` there (or the
+    always-excluded names) left out, and the folders (in full, why) left out whole because their rule file could not
+    be used; a subagent's file lives one folder deeper and is not one."""
     root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
     walk = Walk(root, {".jsonl"})
-    return [root / relative for relative in walk.files if relative.count("/") == 1], walk.left_out
+    unread = [(str(root if folder == "." else root / folder), why) for folder, why in walk.rules_unread]
+    return [root / relative for relative in walk.files if relative.count("/") == 1], walk.left_out, unread
 
 
 def conversations(since: datetime) -> list[Path]:

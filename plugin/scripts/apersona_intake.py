@@ -74,7 +74,7 @@ from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from apersona_ignore import Walk  # noqa: E402
+from apersona_ignore import Walk, unread_sentence  # noqa: E402
 from apersona_mask import Masker, redact_json, redact_secrets  # noqa: E402
 from apersona_projects import with_project  # noqa: E402
 from apersona_safe import (  # noqa: E402
@@ -138,14 +138,15 @@ def write_json(path: Path, value: object) -> None:
     os.replace(str(temporary), str(path))
 
 
-def ai_records() -> tuple[list[tuple[str, Path]], list[tuple[str, str]], int]:
+def ai_records() -> tuple[list[tuple[str, Path]], list[tuple[str, str]], int, list[tuple[str, str]]]:
     """His AI conversation records on this machine: (which tool, file) for each to send, (file, why) for each that is
-    not, and how many the ignore rules left out."""
+    not, how many the ignore rules left out, and the folders (in full, why) left out whole because their rule file
+    could not be used."""
     import apersona_codex  # beside this file: where Codex keeps its sessions
     import apersona_hook
     import apersona_stats
 
-    claude, left_out = apersona_stats.claude_conversations()
+    claude, left_out, unread = apersona_stats.claude_conversations()
     found = [("Claude Code", path) for path in claude]
     held: list[tuple[str, str]] = []
     root = apersona_codex.codex_home() / "sessions"
@@ -156,7 +157,8 @@ def ai_records() -> tuple[list[tuple[str, Path]], list[tuple[str, str]], int]:
             found.append(("Codex", path))
         else:
             held.append((str(path), "不是本人親手打的 Codex 對話（codex exec 或子代理），不送"))
-    return found, held, left_out + walk.left_out
+    unread += [(str(root if folder == "." else root / folder), why) for folder, why in walk.rules_unread]
+    return found, held, left_out + walk.left_out, unread
 
 
 def ai_work() -> Path:
@@ -500,7 +502,7 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
     on = codes_on(site, persona, key)
     if folder is None:
         base = Path.home().resolve()
-        records, held, left_out = ai_records()
+        records, held, left_out, unread = ai_records()
         tools = {
             str(path.resolve().relative_to(base)) if base in path.resolve().parents else str(path.resolve()): tool
             for tool, path in records
@@ -508,7 +510,7 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
     else:
         base, held = folder.resolve(), []
         walk = Walk(folder, SUFFIXES)
-        tools, left_out = dict.fromkeys(walk.files, ""), walk.left_out
+        tools, left_out, unread = dict.fromkeys(walk.files, ""), walk.left_out, walk.rules_unread
         broad = too_broad(folder, len(walk.files))
         if broad and not large:
             print(f"先停下來問本人：{broad}。確定要整個送嗎？")
@@ -538,6 +540,7 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
             "files": rows,
             "held": held,
             "left_out": left_out,
+            "rules_unread": unread,
         },
     )
     total = sum(int(cast(int, r["size"])) for r in rows)
@@ -549,6 +552,8 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
         lines += [f"- 不送：{path}：{why}" for path, why in held]
     if left_out:
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，不送")
+    if unread:
+        lines.append(unread_sentence(unread))
     lines.append(f"本機工作資料夾：{work}")
     if rows:
         lines.append(
@@ -647,7 +652,8 @@ def send(work: Path, names_file: Path | None, me: list[str], read: bool = False,
         answers.append(patiently(partial(post_files, site, key, persona, group, me, bool(take)), "上傳"))
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
     left_out = 0 if take else int(cast(int, plan.get("left_out") or 0))
-    print(said(answers, local, held, left_out, asking=not read))
+    unread = [(str(f), str(why)) for f, why in cast("list[list[object]]", plan.get("rules_unread") or [])]
+    print(said(answers, local, held, left_out, asking=not read, rules_unread=[] if take else unread))
     if plan.get("ai") is True:
         drop_copies(work, answers)
     if read and _agreeable(answers):
@@ -683,6 +689,7 @@ def said(
     held: list[tuple[str, str]],
     left_out: int,
     asking: bool = True,
+    rules_unread: list[tuple[str, str]] | None = None,
 ) -> str:
     """What the site found, summed over the batches, each file by its path here, as the site's data; then the
     plugin's own sentence to agree to (never the site's words: what he is asked to say is not up to the site)."""
@@ -718,6 +725,8 @@ def said(
     lines += [f"- 沒送：{path}：{reason}" for path, reason in held]
     if left_out:
         lines.append(f"照 .gitignore／.apersonaignore、捷徑與一律不讀的檔，排除了 {left_out} 份，沒有送")
+    if rules_unread:
+        lines.append(unread_sentence(rules_unread))
     if deleted:
         lines.append("這幾份裡有刪過的內容，這次先不收：" + "、".join(deleted))
         lines.append(

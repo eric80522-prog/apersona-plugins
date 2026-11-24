@@ -11,6 +11,9 @@ Three kinds, all decided on this machine from names only, before any file is ope
   and `**` as a whole path piece). A file deeper down overrides one above it, and within one folder
   `.apersonaignore` is read after `.gitignore`, so it has the last word. As in git, a path inside an ignored folder
   cannot be brought back. Rule files above the chosen folder are not looked at.
+- a rule file that is there but cannot be used (a shortcut, not a plain file, over the size limit, or unreadable) means
+  the rules of its folder are unknown, so that folder and everything below it is left out whole and named in
+  `Walk.rules_unread` with the reason, for the caller to tell the owner. A rule file that is not there is no rules.
 
 No package is used: none is in the lockfile, and the rules fit in this file.
 """
@@ -19,7 +22,9 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 #: the rule files, in the order they are read inside one folder (the later one has the last word)
@@ -30,6 +35,15 @@ ALWAYS_DIRS = frozenset({".git", "node_modules"})
 ALWAYS_FILE_PREFIX = ".env"
 #: a rule file larger than this is read no further (it is a notes folder, not a data dump)
 MAX_RULE_BYTES = 1_000_000
+
+
+class RuleProblem(Enum):
+    "Why a rule file that is there could not be used; the value is what the owner is told."
+
+    SYMLINK = "是捷徑"
+    NOT_A_FILE = "不是一般檔案"
+    TOO_LARGE = f"超過 {MAX_RULE_BYTES // 1_000_000} MB 上限"
+    UNREADABLE = "讀不到"
 
 
 @dataclass(frozen=True)
@@ -140,17 +154,32 @@ def parse(text: str) -> list[Rule]:
     return rules
 
 
-def _load(folder: Path) -> list[Rule]:
+def _load(folder: Path) -> tuple[list[Rule], RuleProblem | None]:
+    """The rules of one folder, or why they cannot be known: a rule file that is there but unusable gives no rules at
+    all, since the part of them that could be read may not be the part that matters."""
     rules: list[Rule] = []
     for name in RULE_FILES:
         path = folder / name
         try:
-            if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RULE_BYTES:
-                continue
+            mode = path.lstat()
+            if stat.S_ISLNK(mode.st_mode):
+                return [], RuleProblem.SYMLINK
+            if not stat.S_ISREG(mode.st_mode):
+                return [], RuleProblem.NOT_A_FILE
+            if mode.st_size > MAX_RULE_BYTES:
+                return [], RuleProblem.TOO_LARGE
             rules += parse(path.read_text(encoding="utf-8", errors="replace"))
+        except FileNotFoundError:
+            continue  # no rule file: no rules, nothing is hidden
         except OSError:
-            continue
-    return rules
+            return [], RuleProblem.UNREADABLE
+    return rules, None
+
+
+def unread_sentence(rules_unread: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> str:
+    "The sentence that tells the owner which folders were left out whole because their rule file could not be used."
+    named = "、".join(f"{'選的資料夾本身' if folder == '.' else folder}（規則檔{why}）" for folder, why in rules_unread)
+    return f"規則檔用不了，所以這些資料夾（含底下）整個不送：{named}。"
 
 
 def is_ignored(parts: tuple[str, ...], is_dir: bool, levels: list[tuple[tuple[str, ...], list[Rule]]]) -> bool:
@@ -170,14 +199,26 @@ def is_ignored(parts: tuple[str, ...], is_dir: bool, levels: list[tuple[tuple[st
 class Walk:
     """What a folder holds that is to be read, and how many files were left out. `files` are paths from the folder, in
     sorted order, of the kinds `suffixes` names, none hidden (a dot in front of any piece); `left_out` counts those
-    kinds of files that the rules or the always-list kept out, folders left out counted file by file."""
+    kinds of files that the rules or the always-list kept out, folders left out counted file by file. `rules_unread`
+    lists (folder from the chosen one, `.` for it, why) of each folder left out whole because its rule file is there
+    but unusable (`RuleProblem`); its files are in `left_out` too."""
 
     def __init__(self, root: Path, suffixes: frozenset[str] | set[str]) -> None:
         self.root = root
         self.suffixes = suffixes
         self.files: list[str] = []
         self.left_out = 0
-        self._visit(root, (), [((), _load(root))])
+        self.rules_unread: list[tuple[str, str]] = []
+        self._enter(root, (), [])
+
+    def _enter(self, folder: Path, parts: tuple[str, ...], levels: list[tuple[tuple[str, ...], list[Rule]]]) -> None:
+        "Read a folder's rules, then walk it; when its rules cannot be known, leave it out whole and say why."
+        rules, problem = _load(folder)
+        if problem is None:
+            self._visit(folder, parts, [*levels, (parts, rules)])
+            return
+        self.left_out += self._count(folder)
+        self.rules_unread.append(("/".join(parts) or ".", problem.value))
 
     def _visit(self, folder: Path, parts: tuple[str, ...], levels: list[tuple[tuple[str, ...], list[Rule]]]) -> None:
         try:
@@ -197,7 +238,7 @@ class Walk:
                 if entry.name in ALWAYS_DIRS or is_ignored(below, True, levels):
                     self.left_out += self._count(Path(entry.path))
                 else:
-                    self._visit(Path(entry.path), below, [*levels, (below, _load(Path(entry.path)))])
+                    self._enter(Path(entry.path), below, levels)
                 continue
             if Path(entry.name).suffix.lower() not in self.suffixes or not entry.is_file(follow_symlinks=False):
                 continue
