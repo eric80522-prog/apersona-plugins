@@ -30,13 +30,13 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       (`POST /api/intake/files`, at most `MAX_FILES` files and `MAX_TOTAL_BYTES` a batch, a file over
                       `MAX_FILE_BYTES` not sent); the site keeps them prepared, waiting for his yes, reads nothing and
                       spends nothing. What it found is printed as the site's data (`fenced`), and then the plugin's
-                      own sentence to agree to: 「用你的額度讀這 N 份」, on the free extraction 「用免費額度讀這 N 份」.
+                      own sentence to agree to: 「用你的額度讀這 N 份」.
                       A part he deleted on the site and sends again is not taken (刪過的內容，這次先不收): the files
                       are named, with how to take one back.
 - `send --read --take-deleted <path>`  his yes for that file of the list (one flag a file): only those files go,
                       and the parts of them he deleted are read as new sources.
 - `consent yes|no`    his answer to that sentence. Yes: each batch's yes (`POST /api/intake/files/consent`), and the
-                      site queues the read, or says why not (the free extraction used, nothing left to read). No:
+                      site queues the read, or says why not (only test accounts are read, nothing left to read). No:
                       each batch's no (`POST /api/intake/files/decline`): nothing is read, now or later; the site
                       keeps what it prepared and never reads it (as for a batch left without a yes for 7 days).
 - `status`            where each batch's read stands (`GET /api/intake/files`).
@@ -552,7 +552,7 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
     lines.append(f"本機工作資料夾：{work}")
     if rows:
         lines.append(
-            "要把這幾份送上網站，並讓網站接著讀進人格嗎？（讀取先用免費提取額度，用完才用你的額度；"
+            "要把這幾份送上網站，並讓網站接著讀進人格嗎？（目前只開放測試帳號讀取，其他帳號送上去只保存、不讀；"
             "花費不超過同意上限。）這是唯一要問的一句，之後不會再問。"
             "本人說好，才執行 send --read；說不要就什麼都不送、不讀。"
         )
@@ -705,9 +705,7 @@ def said(
                 line += f"；其中 {f.get('held')} 段有刪過的內容，這次先不收"
         found.append(line)
     agreeable = _agreeable(answers)
-    found += [
-        str(a.get("estimateWords") or a.get("free")) for a in agreeable[:1] if a.get("estimateWords") or a.get("free")
-    ]
+    found += [str(a["estimateWords"]) for a in agreeable[:1] if a.get("estimateWords")]
     lines = [fenced("\n".join(found))]
     if local:
         skipped = f"，沒送 {len(held)} 份" if held else ""
@@ -747,21 +745,13 @@ def rules_line(answers: list[dict[str, object]]) -> str:
     return f"也可以只整理規矩（不逐段讀；之前送過的檔也能再整理一次）：本人親口說「{sentence}」才跑 consent rules。"
 
 
-def _on_free(answer: dict[str, object]) -> bool:
-    "Whether the site says this batch's yes is on the free extraction: its `onFree`, else (older site) its sentence."
-    if "onFree" in answer:
-        return answer["onFree"] is True
-    return str(answer.get("question") or "").startswith("用免費額度")
-
-
 def question(agreeable: list[dict[str, object]], n: int) -> str:
-    "The one sentence for every batch, made here from the count: on the free extraction when the site says so."
+    "The one sentence for every batch, made here from the count."
     metadata = sum(int(cast(int, a.get("metadataParts") or 0)) for a in agreeable)
     readable = sum(int(cast(int, a.get("readableParts") or 0)) for a in agreeable)
     if metadata and not readable:
         return f"補登這 {metadata} 份完整訊息觀測，不重新讀取、不花額度"
-    free = all(_on_free(a) for a in agreeable)
-    answer = f"用免費額度讀這 {n} 份" if free else f"用你的額度讀這 {n} 份"
+    answer = f"用你的額度讀這 {n} 份"
     return answer + (f"；另補登 {metadata} 份完整訊息觀測，不重讀、不花額度" if metadata else "")
 
 
