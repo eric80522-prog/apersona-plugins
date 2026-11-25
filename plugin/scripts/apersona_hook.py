@@ -40,7 +40,7 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_mask import redact_secrets  # noqa: E402  (the site's own masking, word for word)
 from apersona_projects import allows, project_key, project_path, set_project, write_switch  # noqa: E402
-from apersona_safe import EXIT_FAILED, clean, exit_line, fenced, open_url, read_json, terminal_input, utf8_pipes  # noqa: E402
+from apersona_safe import EXIT_FAILED, STATUS_EXITS, clean, exit_line, fenced, open_url, read_json, terminal_input, utf8_pipes  # noqa: E402
 
 #: the hook's own share of the 3 s; `APERSONA_HOOK_BUDGET_S` widens it only where a test runs on a busy machine
 BUDGET_S = float(os.environ.get("APERSONA_HOOK_BUDGET_S") or 2.2)
@@ -240,9 +240,10 @@ def report_refused(refused: str) -> int:
         if refused == "owner_confirmation_required"
         else "伺服器沒有記下這次代開（" + refused + "），所以沒有開；登入好之後再試"
     )
+    code = STATUS_EXITS.get(refused, EXIT_FAILED)
     print("沒有開啟，收錄維持關閉：" + why)
-    print(exit_line(EXIT_FAILED))
-    return EXIT_FAILED
+    print(exit_line(code))
+    return code
 
 
 def tell_site(hint: str, record: dict[str, object], tool: str) -> str:
@@ -359,8 +360,8 @@ def answer_consent(client: str, answer: str, by_agent: bool = False, words: str 
     on = typed == CONSENT_PHRASE
     if on and report_consent(client, consent_record(client, True)) == "owner_revoked":
         print("沒有開啟，收錄維持關閉：" + SITE_CLOSED)
-        print(exit_line(EXIT_FAILED))
-        return EXIT_FAILED
+        print(exit_line(STATUS_EXITS["owner_revoked"]))
+        return STATUS_EXITS["owner_revoked"]
     write_consent(client, on)
     if on:  # told to the site above, best effort: his own yes needs no site to be real
         print("收錄已開啟；隨時可用 --consent no 撤回。")

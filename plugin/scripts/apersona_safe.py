@@ -12,6 +12,7 @@
 - `EXIT_*`, `exit_line(code)`   every script's exit codes and the one line said with a non-zero one: next step and
                                 who does it, whether he must agree, how to check (錯誤碼總表; the server's
                                 `assembly.PLUGIN_EXITS` is the same table).
+- `STATUS_EXITS`                the exit code of each named status a send, flush or consent ends on.
 
 Standard library only, on python 3.9 and up.
 """
@@ -58,6 +59,26 @@ EXIT_WORDS: Final = {
     EXIT_NOT_LOGGED_IN: ("要本人回話", "本人執行 /apersona:login", "", "再跑一次 login status 不再說要登入"),
     EXIT_PAUSED: ("等一下再試", "過一會兒再跑同一個命令", "", "再跑一次同一個命令"),
     EXIT_ASK_FIRST: ("要本人回話", "本人照輸出的問題回答（例如 consent yes／no）", "要本人同意", "再跑一次不再問"),
+}
+#: named status a command ends on → its exit code; a status that is a 錯誤碼總表 code is compared with its row there
+STATUS_EXITS: Final = {
+    # `apersona_feed.py` send / flush, its one JSON line (`say`); a status not listed exits EXIT_UNFINISHED
+    "sent": 0,
+    "pending": 0,
+    "ok": 0,
+    "no_capture": EXIT_UNFINISHED,
+    "unreadable": EXIT_UNFINISHED,
+    "id_required": EXIT_UNFINISHED,
+    "empty": EXIT_UNFINISHED,
+    "consent_off": EXIT_UNFINISHED,
+    "project_disabled": EXIT_UNFINISHED,
+    "needs_terminal": EXIT_UNFINISHED,
+    "refused": EXIT_UNFINISHED,
+    "skipped": EXIT_UNFINISHED,
+    "miss": EXIT_UNFINISHED,
+    # 收錄 stayed off when it was to be opened (`apersona_hook.report_refused`); a code not listed exits EXIT_FAILED
+    "owner_revoked": EXIT_FAILED,
+    "owner_confirmation_required": EXIT_FAILED,
 }
 
 
