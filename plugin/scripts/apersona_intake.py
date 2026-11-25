@@ -16,9 +16,7 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       `apersona_hook.session_source`; `codex exec` and subagents are not sent), each as it is; an
                       `.apersonaignore` in either place is kept. Printed as how many and how large per tool, not file
                       by file. `--ai` then stands for the folder in every command below.
-- `send [--read]`     after his yes to the list (with `--read`: that one yes is to sending and reading together,
-                      and the read is queued right after the upload, nothing more is asked): those files
-                      exactly (one changed since `ask` stops it), with
+- `send`              after his yes to sending the list: those files exactly (one changed since `ask` stops it), with
                       secrets dropped from every text file on this machine first; every other word goes as written
                       (上傳前換代號 was retired). A .docx or .pdf goes as it is (the site drops its secrets), and a
                       text file that is not UTF-8 is read as Big5 / cp950, masked, and sent as UTF-8, or not sent when
@@ -27,14 +25,19 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       extension): its path stays here, in `files.json`. The files go in batches the site takes
                       (`POST /api/intake/files`, at most `MAX_FILES` files and `MAX_TOTAL_BYTES` a batch, a file over
                       `MAX_FILE_BYTES` not sent); the site keeps them prepared, waiting for his yes, reads nothing and
-                      spends nothing. What it found is printed as the site's data (`fenced`), and then the plugin's
-                      own sentence to agree to: 「用你的額度讀這 N 份」.
+                      spends nothing. What it found is printed as the site's data (`fenced`), and then the site's
+                      sentence to agree to, word for word: 「讀這 N 份，預估 US$X，最多 US$Y」, with its
+                      confirmation code. Reading spends money, so its yes is his own, after he has seen the amounts:
+                      the plugin never says it for him.
                       A part he deleted on the site and sends again is not taken (刪過的內容，這次先不收): the files
                       are named, with how to take one back.
-- `send --read --take-deleted <path>`  his yes for that file of the list (one flag a file): only those files go,
-                      and the parts of them he deleted are read as new sources.
-- `consent yes|no`    his answer to that sentence. Yes: each batch's yes (`POST /api/intake/files/consent`), and the
-                      site queues the read, or says why not (only test accounts are read, nothing left to read). No:
+- `send --take-deleted <path>`  his yes for that file of the list (one flag a file): only those files go, and
+                      the parts of them he deleted are taken as new sources (read on his yes to the sentence).
+- `consent yes --words "<his sentence>"|no`  his answer to that sentence. Yes: each batch's yes with his own words
+                      (`POST /api/intake/files/consent`, `ownerReply`: the site takes it only when they carry the
+                      sentence's confirmation code, 跨模組 11-11), and the site queues the read, or says why not
+                      (only test accounts are read, nothing left to read; 「今天已經花了…要繼續嗎？」 answered
+                      with `--keep-going`). No:
                       each batch's no (`POST /api/intake/files/decline`): nothing is read, now or later; the site
                       keeps what it prepared and never reads it (as for a batch left without a yes for 7 days).
 - `status`            where each batch's read stands (`GET /api/intake/files`).
@@ -66,6 +69,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
+from decimal import ROUND_CEILING, Decimal
 from functools import partial
 from io import TextIOWrapper
 from pathlib import Path
@@ -516,9 +520,8 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
     lines.append(f"本機工作資料夾：{work}")
     if rows:
         lines.append(
-            "要把這幾份送上網站，並讓網站接著讀進人格嗎？（目前只開放測試帳號讀取，其他帳號送上去只保存、不讀；"
-            "花費不超過同意上限。）這是唯一要問的一句，之後不會再問。"
-            "本人說好，才執行 send --read；說不要就什麼都不送、不讀。"
+            "要把這幾份送上網站嗎？（送上去只保存、還不讀；網站算好要花多少，再請你同意讀。目前只開放測試帳號讀取。）"
+            "本人說好，才執行 send；說不要就什麼都不送。"
         )
     else:
         lines.append("沒有要送的檔。")
@@ -559,13 +562,10 @@ def _plan_as_asked(work: Path) -> dict[str, object]:
     return plan
 
 
-def send(work: Path, me: list[str], read: bool = False, take: list[str] | None = None) -> int:
-    """`send`: the files `ask` listed, exactly (their secrets dropped here), and what the site found.
-    With `read` his one yes to `ask`'s sentence covered the read too: the site is told yes for every batch right
-    after the upload, and no second sentence is put to him. `take` the files of the list he said yes for after the
-    site held parts of them he had deleted: only those go, and those parts are read as new."""
-    if take and not read:
-        raise RefusedError("--take-deleted 要和 --read 一起用：本人說要收回那份，就是同意讀它")
+def send(work: Path, me: list[str], take: list[str] | None = None) -> int:
+    """`send`: the files `ask` listed, exactly (their secrets dropped here), and what the site found, with the site's
+    sentence for his yes to the read (its amounts and confirmation code). `take` the files of the list he said yes for
+    after the site held parts of them he had deleted: only those go, and those parts are taken as new."""
     site, persona, key = options()
     plan = _plan_as_asked(work)
     folder = Path(str(plan["folder"]))
@@ -594,11 +594,9 @@ def send(work: Path, me: list[str], read: bool = False, take: list[str] | None =
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
     left_out = 0 if take else int(cast(int, plan.get("left_out") or 0))
     unread = [(str(f), str(why)) for f, why in cast("list[list[object]]", plan.get("rules_unread") or [])]
-    print(said(answers, local, held, left_out, asking=not read, rules_unread=[] if take else unread))
+    print(said(answers, local, held, left_out, rules_unread=[] if take else unread))
     if plan.get("ai") is True:
         drop_copies(work, answers)
-    if read and _agreeable(answers):
-        return consent(work, True)
     return 0
 
 
@@ -629,11 +627,10 @@ def said(
     local: dict[str, str],
     held: list[tuple[str, str]],
     left_out: int,
-    asking: bool = True,
     rules_unread: list[tuple[str, str]] | None = None,
 ) -> str:
     """What the site found, summed over the batches, each file by its path here, as the site's data; then the
-    plugin's own sentence to agree to (never the site's words: what he is asked to say is not up to the site)."""
+    plugin's own sentence to agree to (`question`: the site's numbers, never its words)."""
     files = [cast("dict[str, object]", f) for a in answers for f in cast("list[object]", a.get("files") or [])]
     readable = sum(int(cast(int, a.get("readableParts") or 0)) for a in answers)
     why: dict[str, int] = {}
@@ -669,18 +666,20 @@ def said(
     if deleted:
         lines.append("這幾份裡有刪過的內容，這次先不收：" + "、".join(deleted))
         lines.append(
-            '要收回其中哪一份，要本人說出是哪一份、說要收回，才跑 send --read --take-deleted "<那份的路徑>"'
+            '要收回其中哪一份，要本人說出是哪一份、說要收回，才跑 send --take-deleted "<那份的路徑>"'
             "（一份一個 --take-deleted）；那些內容會當成新的來源讀。本人沒說就不收。"
             "也可以到網站資料頁恢復刪掉的那份來源。"
         )
-    if agreeable and not asking:
-        lines.append("你已經在送出前同意送與讀，不再問第二次。")
-    elif agreeable:
-        n = sum(1 for f in files if not f.get("reason"))
-        lines.append(PREPARED if readable else "同意後只補登完整訊息觀測，不重新讀取、不花額度；不同意不補登。")
+    if agreeable:
+        lines.append(PREPARED if readable else "同意後只補登完整訊息觀測，不重新讀取、不花錢；不同意不補登。")
         action = "要開始讀" if readable else "要補登觀測"
-        lines.append(f"{action}，請本人親口說同意：「{question(agreeable, n)}」")
-    rules = rules_line(answers) if asking else ""
+        sentence, codes = question(agreeable)
+        code = f"，並說出確認碼 {codes}" if codes else ""
+        lines.append(
+            f"{action}，請本人親口說同意：「{sentence}」{code}；AI 不能代為同意。"
+            '本人說了，才跑 consent yes --words "<本人那句原話>"'
+        )
+    rules = rules_line(answers)
     if not agreeable and not rules:
         lines.append("這次沒有能讀的段落，不用同意。")
     return "\n".join(lines + ([rules] if rules else []))
@@ -692,17 +691,48 @@ def rules_line(answers: list[dict[str, object]]) -> str:
     if not rules:
         return ""
     sentence = rules[0].get("question")
-    return f"也可以只整理規矩（不逐段讀；之前送過的檔也能再整理一次）：本人親口說「{sentence}」才跑 consent rules。"
+    codes = " ".join(c for c in (str(r.get("confirmCode") or "") for r in rules) if c.isdigit())
+    return (
+        f"也可以只整理規矩（不逐段讀；之前送過的檔也能再整理一次；會花錢）：本人親口說「{sentence}」"
+        f"並說出確認碼 {codes}，才跑 consent rules --words \"<本人那句原話>\"。"
+    )
 
 
-def question(agreeable: list[dict[str, object]], n: int) -> str:
-    "The one sentence for every batch, made here from the count."
+#: the site's sentence, piece by piece (`reading.consent.decision`: QUESTION, SUPPLEMENT, TAKEN_BACK and the paid
+#: entry's 「，預估 …，最多 …」); the site's tests compare a sentence made here with its own
+READ = "讀這 {} 份"
+SUPPLEMENT = "補登這 {} 份來源類型或完整訊息觀測，不重新讀取、不花錢"
+TAKEN_BACK = "；其中 {} 段是刪過的內容，照你說的收回，當成新的來源"
+
+
+def money(usd: Decimal) -> str:
+    "An amount as the site says it: two decimals rounded up, or 「不到 US$0.01」 above nothing."
+    if Decimal(0) < usd < Decimal("0.01"):
+        return "不到 US$0.01"
+    return "US$" + str(usd.quantize(Decimal("0.01"), ROUND_CEILING))
+
+
+def question(agreeable: list[dict[str, object]]) -> tuple[str, str]:
+    """The one sentence for every batch, made here (never the site's words: what he is asked to say is not up to the
+    site) from the site's counts and its quote's numbers (`estimate`: the expected cost and the most, summed over the
+    batches), and the confirmation code(s) it must carry (digits only)."""
+    files = [cast("dict[str, object]", f) for a in agreeable for f in cast("list[object]", a.get("files") or [])]
+    n = sum(1 for f in files if not f.get("reason"))
     metadata = sum(int(cast(int, a.get("metadataParts") or 0)) for a in agreeable)
     readable = sum(int(cast(int, a.get("readableParts") or 0)) for a in agreeable)
-    if metadata and not readable:
-        return f"補登這 {metadata} 份完整訊息觀測，不重新讀取、不花額度"
-    answer = f"用你的額度讀這 {n} 份"
-    return answer + (f"；另補登 {metadata} 份完整訊息觀測，不重讀、不花額度" if metadata else "")
+    back = sum(int(cast(int, f.get("takenBack") or 0)) for f in files)
+    tail = TAKEN_BACK.format(back) if back else ""
+    if not readable:
+        return (SUPPLEMENT.format(metadata) if metadata else READ.format(0)) + tail, ""
+    sentence = READ.format(n)
+    quoted = [cast("dict[str, object]", a["estimate"]) for a in agreeable if isinstance(a.get("estimate"), dict)]
+    if quoted and len(quoted) == len(agreeable):
+        expected = sum((Decimal(str(q.get("amount"))) for q in quoted), Decimal(0))
+        cap = sum((Decimal(str(q.get("cap"))) for q in quoted), Decimal(0))
+        sentence += f"，預估 {money(expected)}，最多 {money(cap)}"
+    sentence += ("；另" + SUPPLEMENT.format(metadata) if metadata else "") + tail
+    codes = [str(a.get("confirmCode") or "") for a in agreeable if a.get("readableParts")]
+    return sentence, " ".join(c for c in codes if c.isdigit())
 
 
 def _uploads(work: Path) -> dict[str, object]:
@@ -713,11 +743,15 @@ def _uploads(work: Path) -> dict[str, object]:
     return record
 
 
-def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
+def consent(work: Path, yes: bool, rules_only: bool = False, words: str = "", keep_going: bool = False) -> int:
     """`consent yes|no|rules`: his answer to the sentence, for every batch of the last `ask`. `rules`: his yes to the
     site's second sentence (`rulesOnly`, 「只整理成長期規矩，不逐段讀」) for each batch that has one, a batch of files
     sent before included (nothing new to read, but 長期規矩 is made again over what is kept); a batch without it
-    (nothing he said to an AI in it) is left unanswered."""
+    (nothing he said to an AI in it) is left unanswered. `words`: his own sentence, as said (the site takes a yes
+    that spends only when it carries the sentence's confirmation code); `keep_going`: his 「要繼續」 to what today
+    spent."""
+    if yes and not words.strip():
+        raise RefusedError('要本人親口說的那句（含確認碼）：consent yes --words "<本人那句原話>"')
     site, persona, key = options()
     record = _uploads(work)
     answers = cast("list[dict[str, object]]", record["answers"])
@@ -735,6 +769,7 @@ def consent(work: Path, yes: bool, rules_only: bool = False) -> int:
     agreed: list[str] = []
     for a in answers if rules_only else _agreeable(answers):
         body: dict[str, object] = {**who(persona), "jobId": a["jobId"], "consentSha256": a["consentSha256"]}
+        body |= {"ownerReply": words, "keepGoing": keep_going}
         if rules_only:
             offered = a.get("rulesOnly")
             if not isinstance(offered, dict):
@@ -820,19 +855,18 @@ def _main(argv: list[str] | None = None) -> int:
     asking.add_argument("folder", type=Path, nargs="?", help="素材資料夾；用 --ai 時不給")
     asking.add_argument("--large", action="store_true", help="本人確定要送整個家目錄或超過 200 份時才加")
     sending = commands.add_parser("send", help="本人看過清單說好之後：送 ask 列的那些檔上網站切段")
-    sending.add_argument(
-        "--read", action="store_true", help="本人對 ask 那一句（送與讀）說好：送完直接排進讀取，不再問"
-    )
     sending.add_argument("--me", action="append", default=[], help="聊天匯出檔裡本人的名字或帳號 ID（可多個）")
     sending.add_argument(
         "--take-deleted",
         action="append",
         default=[],
         metavar="PATH",
-        help="本人說要收回的那份檔（ask 清單上的路徑，一份一個）：只送這幾份，刪過的內容當成新的來源讀；要加 --read",
+        help="本人說要收回的那份檔（ask 清單上的路徑，一份一個）：只送這幾份，刪過的內容當成新的來源",
     )
     answer = commands.add_parser("consent")
     answer.add_argument("answer", choices=("yes", "no", "rules"))
+    answer.add_argument("--words", default="", help="本人同意時親口說的那一句（要有確認碼）；AI 不能代為同意")
+    answer.add_argument("--keep-going", action="store_true", help="本人對「今天已經花了…要繼續嗎？」說要繼續")
     commands.add_parser("status")
     commands.add_parser("cancel")
     args = parser.parse_args(argv)
@@ -851,9 +885,9 @@ def _main(argv: list[str] | None = None) -> int:
                 raise RefusedError("要給素材資料夾，或用 --ai 送這台的 AI 對話紀錄")
             return ask(folder, work, bool(args.large))
         if args.command == "send":
-            return send(work, list(args.me), bool(args.read), list(args.take_deleted))
+            return send(work, list(args.me), list(args.take_deleted))
         if args.command == "consent":
-            return consent(work, args.answer != "no", args.answer == "rules")
+            return consent(work, args.answer != "no", args.answer == "rules", str(args.words), bool(args.keep_going))
         if args.command == "status":
             return status(work)
         return cancel(work)
