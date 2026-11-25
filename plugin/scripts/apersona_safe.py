@@ -60,9 +60,8 @@ EXIT_WORDS: Final = {
     EXIT_PAUSED: ("等一下再試", "過一會兒再跑同一個命令", "", "再跑一次同一個命令"),
     EXIT_ASK_FIRST: ("要本人回話", "本人照輸出的問題回答（例如 consent yes／no）", "要本人同意", "再跑一次不再問"),
 }
-#: named status a command ends on → its exit code; a status that is a 錯誤碼總表 code is compared with its row there
+#: named status a command ends on → its exit code; the server's tests compare each 錯誤碼總表 code here with its row
 STATUS_EXITS: Final = {
-    # `apersona_feed.py` send / flush, its one JSON line (`say`); a status not listed exits EXIT_UNFINISHED
     "sent": 0,
     "pending": 0,
     "ok": 0,
@@ -76,7 +75,6 @@ STATUS_EXITS: Final = {
     "refused": EXIT_UNFINISHED,
     "skipped": EXIT_UNFINISHED,
     "miss": EXIT_UNFINISHED,
-    # 收錄 stayed off when it was to be opened (`apersona_hook.report_refused`); a code not listed exits EXIT_FAILED
     "owner_revoked": EXIT_FAILED,
     "owner_confirmation_required": EXIT_FAILED,
 }
