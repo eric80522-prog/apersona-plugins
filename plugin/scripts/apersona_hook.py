@@ -40,7 +40,7 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_mask import redact_secrets  # noqa: E402  (the site's own masking, word for word)
 from apersona_projects import allows, project_key, project_path, set_project, write_switch  # noqa: E402
-from apersona_safe import EXIT_FAILED, STATUS_EXITS, clean, exit_line, fenced, open_url, read_json, terminal_input, utf8_pipes  # noqa: E402
+from apersona_safe import EXIT_FAILED, STATUS_EXITS, clean, exit_line, fenced, open_url, read_json, terminal_input, utf8_pipes  # noqa: E402,E501
 
 #: the hook's own share of the 3 s; `APERSONA_HOOK_BUDGET_S` widens it only where a test runs on a busy machine
 BUDGET_S = float(os.environ.get("APERSONA_HOOK_BUDGET_S") or 2.2)
