@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apersona_hook as hook  # noqa: E402
 from apersona_mask import redact_secrets  # noqa: E402
 from apersona_projects import allows  # noqa: E402
-from apersona_safe import EXIT_FAILED, EXIT_UNFINISHED, exit_line, read_json, terminal_input, write_replacing  # noqa: E402,E501
+from apersona_safe import EXIT_FAILED, STATUS_EXITS, exit_line, read_json, terminal_input, write_replacing  # noqa: E402,E501
 
 #: his consent text per platform; the site holds the same words (`memory/conversation.py`) and checks the hash
 CONSENT_TEXTS = {
@@ -197,9 +197,7 @@ def answer_consent(platform: str, answer: str, by_agent: bool = False, words: st
     except OSError:
         typed = ""
     if typed == hook.CONSENT_PHRASE and report_consent(platform, {"on": True, "by": "owner"}) == "owner_revoked":
-        print("沒有開啟，收錄維持關閉：" + hook.SITE_CLOSED)
-        print(exit_line(EXIT_FAILED))
-        return EXIT_FAILED
+        return hook.report_refused("owner_revoked")
     write_consent(platform, typed == hook.CONSENT_PHRASE)
     if typed == hook.CONSENT_PHRASE:  # told to the site above, best effort: his own yes needs no site to be real
         print("收錄已開啟；隨時可用 consent no 撤回。")
@@ -486,7 +484,7 @@ def confirmed(platform: str, text: str) -> bool:
 
 def say(status: str, error: str = "") -> int:
     "The one JSON line: the status, why not, and with a non-zero exit what to do next (錯誤碼總表)."
-    code = 0 if status in ("sent", "pending", "ok") else EXIT_UNFINISHED
+    code = STATUS_EXITS[error if error in hook.CONSENT_REFUSALS else status]
     body = {"status": status, **({"error": error} if error else {}), **({"next": exit_line(code)} if code else {})}
     print(json.dumps(body, ensure_ascii=False))
     return code
