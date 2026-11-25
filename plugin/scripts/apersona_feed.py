@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apersona_hook as hook  # noqa: E402
 from apersona_mask import redact_secrets  # noqa: E402
 from apersona_projects import allows  # noqa: E402
-from apersona_safe import EXIT_FAILED, EXIT_UNFINISHED, STATUS_EXITS, exit_line, read_json, terminal_input, write_replacing  # noqa: E402,E501
+from apersona_safe import EXIT_FAILED, STATUS_EXITS, exit_line, read_json, terminal_input, write_replacing  # noqa: E402,E501
 
 #: his consent text per platform; the site holds the same words (`memory/conversation.py`) and checks the hash
 CONSENT_TEXTS = {
@@ -486,7 +486,7 @@ def confirmed(platform: str, text: str) -> bool:
 
 def say(status: str, error: str = "") -> int:
     "The one JSON line: the status, why not, and with a non-zero exit what to do next (錯誤碼總表)."
-    code = STATUS_EXITS.get(status, EXIT_UNFINISHED)
+    code = STATUS_EXITS[status]
     body = {"status": status, **({"error": error} if error else {}), **({"next": exit_line(code)} if code else {})}
     print(json.dumps(body, ensure_ascii=False))
     return code
