@@ -12,7 +12,8 @@
 - `EXIT_*`, `exit_line(code)`   every script's exit codes and the one line said with a non-zero one: next step and
                                 who does it, whether he must agree, how to check (錯誤碼總表; the server's
                                 `assembly.PLUGIN_EXITS` is the same table).
-- `STATUS_EXITS`                the exit code of each named status a send, flush or consent ends on.
+- `STATUS_EXITS`                the exit code of each named status, or site refusal named by its code, a send, flush
+                                or consent ends on.
 
 Standard library only, on python 3.9 and up.
 """
@@ -60,7 +61,7 @@ EXIT_WORDS: Final = {
     EXIT_PAUSED: ("等一下再試", "過一會兒再跑同一個命令", "", "再跑一次同一個命令"),
     EXIT_ASK_FIRST: ("要本人回話", "本人照輸出的問題回答（例如 consent yes／no）", "要本人同意", "再跑一次不再問"),
 }
-#: named status a command ends on → its exit code; the server's tests compare each 錯誤碼總表 code here with its row
+#: status or named site refusal → exit code; the server's tests compare each 錯誤碼總表 code here with its row
 STATUS_EXITS: Final = {
     "sent": 0,
     "pending": 0,
@@ -75,6 +76,7 @@ STATUS_EXITS: Final = {
     "refused": EXIT_UNFINISHED,
     "skipped": EXIT_UNFINISHED,
     "miss": EXIT_UNFINISHED,
+    "consent_revoked": EXIT_UNFINISHED,
     "owner_revoked": EXIT_FAILED,
     "owner_confirmation_required": EXIT_FAILED,
 }

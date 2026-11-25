@@ -486,7 +486,7 @@ def confirmed(platform: str, text: str) -> bool:
 
 def say(status: str, error: str = "") -> int:
     "The one JSON line: the status, why not, and with a non-zero exit what to do next (錯誤碼總表)."
-    code = STATUS_EXITS[status]
+    code = STATUS_EXITS[error if error in hook.CONSENT_REFUSALS else status]
     body = {"status": status, **({"error": error} if error else {}), **({"next": exit_line(code)} if code else {})}
     print(json.dumps(body, ensure_ascii=False))
     return code
