@@ -197,9 +197,7 @@ def answer_consent(platform: str, answer: str, by_agent: bool = False, words: st
     except OSError:
         typed = ""
     if typed == hook.CONSENT_PHRASE and report_consent(platform, {"on": True, "by": "owner"}) == "owner_revoked":
-        print("沒有開啟，收錄維持關閉：" + hook.SITE_CLOSED)
-        print(exit_line(STATUS_EXITS["owner_revoked"]))
-        return STATUS_EXITS["owner_revoked"]
+        return hook.report_refused("owner_revoked")
     write_consent(platform, typed == hook.CONSENT_PHRASE)
     if typed == hook.CONSENT_PHRASE:  # told to the site above, best effort: his own yes needs no site to be real
         print("收錄已開啟；隨時可用 consent no 撤回。")

@@ -359,9 +359,7 @@ def answer_consent(client: str, answer: str, by_agent: bool = False, words: str 
         typed = ""
     on = typed == CONSENT_PHRASE
     if on and report_consent(client, consent_record(client, True)) == "owner_revoked":
-        print("沒有開啟，收錄維持關閉：" + SITE_CLOSED)
-        print(exit_line(STATUS_EXITS["owner_revoked"]))
-        return STATUS_EXITS["owner_revoked"]
+        return report_refused("owner_revoked")
     write_consent(client, on)
     if on:  # told to the site above, best effort: his own yes needs no site to be real
         print("收錄已開啟；隨時可用 --consent no 撤回。")
