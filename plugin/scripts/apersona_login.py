@@ -4,8 +4,8 @@
                                            website; run again to go on waiting (a code lives ten minutes)
     apersona_login.py status               logged in or not, asked of the site (never prints a token)
     apersona_login.py refresh              trade an ending access token now, quietly (what the hook starts)
-    apersona_login.py logout [--keep keep|delete]  with 收錄 on, ask first whether to keep what it took in; then
-                                           sign this machine out on the website and delete the credentials file
+    apersona_login.py logout               turn 收錄 off on the website if it is on (what it took in stays), sign
+                                           this machine out there and delete the credentials file
 
 Standard library only, on whatever python3 the machine has (3.9 and up). The credentials are in
 `~/.apersona/plugin-credentials.json` (the folder 700, the file 600, except on Windows): site, client_id, access,
@@ -41,7 +41,6 @@ from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_safe import (  # noqa: E402
-    EXIT_ASK_FIRST,
     EXIT_FAILED,
     EXIT_NOT_LOGGED_IN,
     EXIT_UNFINISHED,
@@ -467,23 +466,17 @@ def logout(site: str) -> str:
     return (said + "；" if said else "") + "這台的登入檔已刪除"
 
 
-def sign_out(site: str, keep: str | None) -> int:
-    """`logout [--keep keep|delete]`. With 收錄 on and turns taken in since it opened, his answer comes first, to the
-    same question as turning 收錄 off (撤銷裝置先問同一題): without `--keep` the question is printed and nothing
-    is done. Then 收錄 goes off on the site with that answer, the device signs out (`logout`), and every client's
-    consent file on this machine goes."""
+def sign_out(site: str) -> int:
+    """`logout`. With 收錄 on it goes off on the site first, keeping what it took in (nothing is asked, nothing
+    deleted); then the device signs out (`logout`), and every client's consent file on this machine goes."""
     import apersona_hook  # beside this file: the one place that asks the site about 收錄 and tells it
 
-    on, asked = apersona_hook.capture_turns(site)
-    if asked and keep is None:
-        print(asked + "本人說「保留」或「刪除」之後，再執行 logout --keep keep 或 --keep delete；沒說就不登出。")
-        return EXIT_ASK_FIRST
-    if on:
-        refused = apersona_hook.tell_site(site, {"on": False}, "claude", keep != "delete")
+    if apersona_hook.capture_on_site(site):
+        refused = apersona_hook.tell_site(site, {"on": False}, "claude")
         if refused:
-            print(f"網站沒收到收錄關閉（{refused}）；網站裝置頁請按「撤銷」並回答留或刪")
-        elif keep == "delete":
-            print("這台收錄來的對話已刪除，期限內可在網站資料頁恢復")
+            print(f"網站沒收到收錄關閉（{refused}）；網站裝置頁請按「撤銷」")
+        else:
+            print("收錄已關閉。" + apersona_hook.KEPT_WORDS)
     print(logout(site))
     apersona_hook.forget_consents()
     return 0
@@ -522,7 +515,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_login.py")
     parser.add_argument("command", choices=("login", "status", "refresh", "logout"))
     parser.add_argument("--site", default="")
-    parser.add_argument("--keep", choices=("keep", "delete"), help="logout：收錄收過的對話，本人說保留或刪除")
     args = parser.parse_args(argv)
     code = _main(args)
     if code:
@@ -537,7 +529,7 @@ def _main(args: argparse.Namespace) -> int:
         print(str(e))
         return EXIT_FAILED
     if args.command == "logout":
-        return sign_out(site, args.keep)
+        return sign_out(site)
     if args.command in ("status", "refresh"):
         if not logged_in(site):
             if args.command == "status":

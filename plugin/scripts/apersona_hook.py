@@ -174,6 +174,11 @@ def write_consent(
 
 #: what he hears when he turned 收錄 off on the website and tries to open it anywhere else (the site's words)
 SITE_CLOSED = "這台的收錄是在網站關的，請到網站裝置頁重開"
+#: what he hears when 收錄 goes off or the device signs out: nothing taken in is deleted, and the two ways to ask
+KEPT_WORDS = (
+    "過去收的照樣保存，不會自動清除；要刪請寫信聯絡我們（網站「隱私條款」頁有聯絡信箱），"
+    "或到網站「設定」的「帳號」刪除帳號（刪除後資料不再使用）。"
+)
 
 
 def site_hint(client: str) -> str:
@@ -186,22 +191,21 @@ def site_hint(client: str) -> str:
     return codex_config(data)
 
 
-def report_consent(client: str, record: dict[str, object], keep: bool | None = None) -> str:
+def report_consent(client: str, record: dict[str, object]) -> str:
     """Tell the site 收錄 went on or off on this device, so the 裝置頁 shows who opened it (and mails him when an AI
-    tool did) and his 撤回 there can stop the uploads; an off carries his answer about what it took in (`keep`, None
-    when he was not asked). "" when it is recorded, else the code of why not (`owner_revoked`: he took it back on the
-    website, only the website opens it again; `not_configured`: not logged in)."""
+    tool did) and his 撤回 there can stop the uploads; an off keeps what it took in. "" when it is recorded, else the
+    code of why not (`owner_revoked`: he took it back on the website, only the website opens it again;
+    `not_configured`: not logged in)."""
     try:
         hint = site_hint(client)
     except MissError as refused:
         return str(refused)
-    return tell_site(hint, record, client, keep)
+    return tell_site(hint, record, client)
 
 
-def capture_turns(hint: str) -> tuple[bool, str]:
-    """Whether this device's 收錄 is on as the site says (`hint` the site the login names, "" for its own), and the
-    question 「這台開收錄以來收了 N 輪（…），要保留嗎？」 about what it took in since it opened ("" when it took none
-    in, or the site cannot say); asked before 收錄 goes off and before the device signs out (`apersona_login.py`)."""
+def capture_on_site(hint: str) -> bool:
+    """Whether this device's 收錄 is on as the site says (`hint` the site the login names, "" for its own); False when
+    the site cannot say. Asked before the device signs out (`apersona_login.py`)."""
     try:
         site, key = login_bearer(hint, CONSENT_REPORT_S)
         request = urllib.request.Request(
@@ -209,33 +213,8 @@ def capture_turns(hint: str) -> tuple[bool, str]:
         )
         body = fetch_json(request, CONSENT_REPORT_S)
     except MissError:
-        return False, ""
-    fields = cast("dict[str, object]", body) if isinstance(body, dict) else {}
-    if fields.get("on") is not True:
-        return False, ""
-    turns = fields.get("turns")
-    if not isinstance(turns, int) or turns <= 0:
-        return True, ""
-    span = "～".join(str(fields.get(k) or "")[:10] for k in ("first", "last"))
-    return True, f"這台開收錄以來收了 {turns} 輪（{span}），要保留嗎？"
-
-
-def ask_keep(client: str) -> bool | None:
-    """At his own terminal, before 收錄 goes off, `capture_turns`'s question. True 保留, False 刪除; None when there is
-    nothing to ask or the site cannot say."""
-    try:
-        asked = capture_turns(site_hint(client))[1]
-    except MissError:
-        return None
-    if not asked:
-        return None
-    try:
-        typed = input(asked + "輸入「刪除」就刪，其他都是保留：").strip()
-    except EOFError:  # separate clauses: the formatter would drop the parentheses python 3.9 needs
-        typed = ""
-    except OSError:
-        typed = ""
-    return typed != "刪除"
+        return False
+    return isinstance(body, dict) and cast("dict[str, object]", body).get("on") is True
 
 
 def forget_consents() -> None:
@@ -266,16 +245,13 @@ def report_refused(refused: str) -> int:
     return EXIT_FAILED
 
 
-def tell_site(hint: str, record: dict[str, object], tool: str, keep: bool | None = None) -> str:
-    """Post one consent record (`on`, `by`, an AI tool's opening with his `ownerWords`; an off with his `keep` answer
-    when he gave one) to the site as `tool`'s,
+def tell_site(hint: str, record: dict[str, object], tool: str) -> str:
+    """Post one consent record (`on`, `by`, an AI tool's opening with his `ownerWords`) to the site as `tool`'s,
     with the device login (`hint` the site it names, "" for the login's own). "" when the site recorded it, else the
     code of why not; `apersona_feed.py` uses it too."""
     try:
         site, key = login_bearer(hint, CONSENT_REPORT_S)
         payload = {"on": record.get("on") is True, "byAgent": record.get("by") == "agent", "tool": tool}
-        if keep is not None:
-            payload["keep"] = keep
         words = record.get("ownerWords")
         if isinstance(words, str):
             payload["ownerWords"] = words
@@ -331,11 +307,9 @@ def set_switch(client: str, on: bool) -> str:
     if not approval:
         return said + "。"
     words = str(approval.get("ownerWords") or "")
-    refused = report_consent(
-        client, consent_record(client, on, approval.get("by") == "agent", words=words), None if on else True
-    )
+    refused = report_consent(client, consent_record(client, on, approval.get("by") == "agent", words=words))
     if not refused:
-        return said + ("；收錄照舊開著，只收從現在起打的字。" if on else "；收錄暫停，過去收的保留，網站裝置頁也是關。")
+        return said + ("；收錄照舊開著，只收從現在起打的字。" if on else "；收錄暫停，網站裝置頁也是關。" + KEPT_WORDS)
     if on and refused == "owner_revoked":
         turn_off_locally(client)
         return said + "；收錄沒有跟著開：" + SITE_CLOSED + "。"
@@ -353,10 +327,8 @@ def answer_consent(client: str, answer: str, by_agent: bool = False, words: str 
     he took the 收錄 back on, means it stays off. Anything else (a pipe, no flag) cannot turn 收錄 on. 0 when what was
     asked for is recorded."""
     if answer == "no":
-        keep = ask_keep(client) if terminal_input() and not by_agent else None
-        report_consent(client, write_consent(client, False), keep)
-        said = "" if keep is None else "過去收的保留。" if keep else "過去收的已刪除，期限內可在網站資料頁恢復。"
-        print("收錄已關閉。" + said)
+        report_consent(client, write_consent(client, False))
+        print("收錄已關閉。" + KEPT_WORDS)
         return 0
     text = CODEX_CONSENT_TEXT if client == "codex" else CONSENT_TEXT
     if by_agent:

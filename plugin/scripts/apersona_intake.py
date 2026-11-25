@@ -7,10 +7,9 @@ Standard library only, like the hooks: nothing of the product is installed on hi
 - `ask <folder>`      on this machine only: walk the folder (`.gitignore`／`.apersonaignore` and always `.git`,
                       `node_modules`, `.env*` and shortcuts left out: `apersona_ignore.py`, the same rules the site's
                       own intake keeps) and print what `send` would send: each file with its size, how many and how
-                      large in all, and which would not be sent and why. It asks the site only for the account's
-                      上傳前換代號 (`GET /api/intake/settings`, no file in it; when the site cannot be asked, as if on:
-                      寧可多遮). His home folder itself, or more than `MAX_ASK_FILES` files, stops here first and asks
-                      him (`--large` once he has said yes). The list is kept (`plan.json`) for `send`.
+                      large in all, and which would not be sent and why. It asks the site nothing. His home folder
+                      itself, or more than `MAX_ASK_FILES` files, stops here first and asks him (`--large` once he has
+                      said yes). The list is kept (`plan.json`) for `send`.
 - `--ai ask`          the same, for his AI conversation records on this machine instead of a folder, found in one go:
                       Claude Code's main conversations (`apersona_stats.claude_conversations`) and the Codex
                       sessions a person typed in (`~/.codex/sessions`, by the rollout's first line,
@@ -20,12 +19,11 @@ Standard library only, like the hooks: nothing of the product is installed on hi
 - `send [--read]`     after his yes to the list (with `--read`: that one yes is to sending and reading together,
                       and the read is queued right after the upload, nothing more is asked): those files
                       exactly (one changed since `ask` stops it), with
-                      secrets dropped from every text file on this machine first, and names, phone numbers, emails,
-                      ID numbers and addresses swapped for codes only when 上傳前換代號 is on (as it was at `ask`).
-                      With codes on, a .docx or .pdf is not sent (its text cannot be masked here), nor a text file
-                      that is not UTF-8; with them off a .docx or .pdf goes as it is (the site drops its secrets),
-                      and a text file that is not UTF-8 is read as Big5 / cp950, masked, and sent as UTF-8, or not
-                      sent when it cannot be read. Each file goes up under a random name (`src-<hex>` with its
+                      secrets dropped from every text file on this machine first; every other word goes as written
+                      (上傳前換代號 was retired). A .docx or .pdf goes as it is (the site drops its secrets), and a
+                      text file that is not UTF-8 is read as Big5 / cp950, masked, and sent as UTF-8, or not sent when
+                      it cannot be read. The site keeps the whole text of each file it reads (secrets dropped) and
+                      reads only its cut parts. Each file goes up under a random name (`src-<hex>` with its
                       extension): its path stays here, in `files.json`. The files go in batches the site takes
                       (`POST /api/intake/files`, at most `MAX_FILES` files and `MAX_TOTAL_BYTES` a batch, a file over
                       `MAX_FILE_BYTES` not sent); the site keeps them prepared, waiting for his yes, reads nothing and
@@ -46,7 +44,7 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       reached this machine is cancelled too; `status` reads the site the same way.
 
 The work folder is `~/.apersona/intake/<hash of the folder's path>/` (700, its files 600), never inside the material
-folder, which may be synced to a cloud drive or committed to git. The code table (`aliases.json`) is never sent.
+folder, which may be synced to a cloud drive or committed to git.
 
 A failure is 暫時 (no connection, 5xx, 429: the same request again, MAX_RETRIES times at most, waiting `retry_after`
 or BACKOFF_S) or 永久 (the rest: it stops, says why and what to do). Exit codes: 3 stopped for good, 5 still failing
@@ -75,7 +73,7 @@ from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apersona_ignore import Walk, unread_sentence  # noqa: E402
-from apersona_mask import Masker, redact_json, redact_secrets  # noqa: E402
+from apersona_mask import redact_json, redact_secrets  # noqa: E402
 from apersona_projects import with_project  # noqa: E402
 from apersona_safe import (  # noqa: E402
     EXIT_ASK_FIRST,
@@ -95,7 +93,6 @@ FILES_DECLINE_PATH = "/api/intake/files/decline"
 PREPARED = "先送上來準備，同意後才讀；不同意就不讀（7 天沒回答也當作不讀）。"
 SEGMENTS_PATH = "/api/intake/segments"
 CANCEL_PATH = "/api/intake/cancel"
-SETTINGS_PATH = "/api/intake/settings"
 #: what the site takes in one request: more goes in another batch
 MAX_FILES = 100
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -110,13 +107,12 @@ RETRY_AFTER_MAX_S = 120
 TEMPORARY_ERRORS = ("rate_limited", "unavailable")
 #: more files than this in one `ask` stops to ask him first
 MAX_ASK_FILES = 200
-#: what a text file that is not UTF-8 is tried as, with codes off (Taiwan's older Windows notes)
+#: what a text file that is not UTF-8 is tried as (Taiwan's older Windows notes)
 LEGACY_ENCODINGS = ("big5", "cp950")
 TOO_LARGE_HERE = f"檔案太大（一份最多 {MAX_FILE_BYTES // (1024 * 1024)} MB），這份沒送"
-NOT_UTF8_HERE = "不是 UTF-8 文字，這份沒送；先另存成 UTF-8 再送"
+NOT_UTF8_HERE = "不是 UTF-8、Big5 文字，這份沒送；先另存成 UTF-8 再送"
 MASK_FAILED_HERE = "這份在本機遮不了秘密，沒送；先另存成 UTF-8 的 .txt 或 .md 再送"
 LINKED_HERE = "這是捷徑（連結），不追過去讀，這份沒送"
-NO_MASK_HERE = "「上傳前換代號」開著，這種檔在本機遮不了身分，這份沒送；要讀就先另存成 .txt 或 .md 再送"
 
 
 class RefusedError(Exception):
@@ -330,24 +326,6 @@ def patiently(call: Callable[[], dict[str, object]], what: str) -> dict[str, obj
             attempt += 1
 
 
-def codes_on(site: str, persona: str, key: Callable[[], str] | str) -> bool:
-    "上傳前換代號 as the site says now; on when it cannot be asked (寧可多遮), and he is told which."
-    try:
-        found = get(site, SETTINGS_PATH, key, who(persona)).get("aliasCodes")
-    except OSError:
-        found = None
-    if not isinstance(found, bool):
-        print(
-            "問不到網站上帳號的「上傳前換代號」設定，這次照開著處理：人名、電話、Email、身分證字號、地址換成代號再上傳"
-        )
-        return True
-    if found:
-        print("帳號的「上傳前換代號」開著：人名、電話、Email、身分證字號、地址在這台電腦上換成代號再上傳")
-    else:
-        print("帳號的「上傳前換代號」關著：檔案原樣上傳、原樣送去讀（金鑰、密碼這類秘密一律先在這台電腦上遮掉）")
-    return found
-
-
 def read_bytes(path: Path) -> bytes:
     "The file's bytes, never through a shortcut (symlink): one put there after the folder was walked is refused too."
     descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
@@ -355,10 +333,10 @@ def read_bytes(path: Path) -> bytes:
         return stream.read(MAX_FILE_BYTES + 1)
 
 
-def prepared(path: Path, masker: Masker | None, names: list[str], ai: bool = False) -> tuple[bytes | None, str]:
-    """The bytes to send of one file and, when it is not sent, why: a text file with its secrets dropped (and codes
-    swapped when `masker`); a .docx or .pdf as it is, or not at all with codes on. `ai`: an AI conversation record,
-    whose rows go with their folder put as the project's key (`with_project`), never the path."""
+def prepared(path: Path, ai: bool = False) -> tuple[bytes | None, str]:
+    """The bytes to send of one file and, when it is not sent, why: a text file with its secrets dropped; a .docx or
+    .pdf as it is. `ai`: an AI conversation record, whose rows go with their folder put as the project's key
+    (`with_project`), never the path."""
     try:
         if path.is_symlink():
             return None, LINKED_HERE
@@ -368,8 +346,6 @@ def prepared(path: Path, masker: Masker | None, names: list[str], ai: bool = Fal
     if size > MAX_FILE_BYTES:
         return None, TOO_LARGE_HERE
     suffix = path.suffix.lower()
-    if suffix not in TEXT_SUFFIXES and masker is not None:
-        return None, NO_MASK_HERE
     try:
         raw = read_bytes(path)
     except OSError:
@@ -378,17 +354,13 @@ def prepared(path: Path, masker: Masker | None, names: list[str], ai: bool = Fal
         return None, TOO_LARGE_HERE
     if suffix not in TEXT_SUFFIXES:
         return raw, ""
-    text = decoded(raw, legacy=masker is None)
+    text = decoded(raw)
     if text is None:
         return None, NOT_UTF8_HERE
-
-    def mask(s: str) -> str:
-        return masker.mask(s, names) if masker is not None else redact_secrets(s)
-
     try:
         if suffix == ".json":
             try:
-                return json.dumps(redact_json(json.loads(text), mask), ensure_ascii=False).encode("utf-8"), ""
+                return json.dumps(redact_json(json.loads(text), redact_secrets), ensure_ascii=False).encode("utf-8"), ""
             except ValueError:
                 pass
         if suffix == ".jsonl":  # one JSON object per line: each line masked as JSON, a line that is not stays text
@@ -396,38 +368,28 @@ def prepared(path: Path, masker: Masker | None, names: list[str], ai: bool = Fal
             for line in text.split("\n"):
                 try:
                     row = json.loads(line)
-                    lines.append(json.dumps(redact_json(with_project(row) if ai else row, mask), ensure_ascii=False))
+                    row = with_project(row) if ai else row
+                    lines.append(json.dumps(redact_json(row, redact_secrets), ensure_ascii=False))
                 except ValueError:
-                    lines.append(mask(line))
+                    lines.append(redact_secrets(line))
             return "\n".join(lines).encode("utf-8"), ""
-        return mask(text).encode("utf-8"), ""
+        return redact_secrets(text).encode("utf-8"), ""
     except Exception:  # noqa: BLE001  whatever went wrong, a file not masked is never sent
         return None, MASK_FAILED_HERE
 
 
-def decoded(raw: bytes, legacy: bool) -> str | None:
-    "The text of a file: UTF-8, else (when `legacy`) Big5 or cp950; None when it is none of them."
+def decoded(raw: bytes) -> str | None:
+    "The text of a file: UTF-8, else Big5 or cp950; None when it is none of them."
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    if not legacy:
-        return None
     for encoding in LEGACY_ENCODINGS:
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError:
             continue
     return None
-
-
-def _text(path: Path) -> str:
-    try:
-        return read_bytes(path).decode("utf-8")
-    except OSError:
-        return ""
-    except UnicodeDecodeError:  # one exception per clause: the plugin runs on Python 3.9
-        return ""
 
 
 def batches(files: list[tuple[str, bytes]]) -> list[list[tuple[str, bytes]]]:
@@ -495,11 +457,10 @@ def keep_as_asked(base: Path, relative: str, asked: Path) -> Path:
 def ask(folder: Path | None, work: Path, large: bool) -> int:
     """`ask`: what `send` would send, listed here; nothing of the files leaves the machine. No `folder`: his AI
     records (`ai_records`), listed per tool; the plan names them from his home folder (or in full, outside it)."""
-    site, persona, key = options()
+    site, _, _ = options()  # logged in first: nothing is listed for a machine that cannot send
     if folder is not None and not folder.is_dir():
         raise RefusedError(f"找不到素材資料夾：{folder}")
     private_dir(work)
-    on = codes_on(site, persona, key)
     if folder is None:
         base = Path.home().resolve()
         records, held, left_out, unread = ai_records()
@@ -516,13 +477,12 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
             print(f"先停下來問本人：{broad}。確定要整個送嗎？")
             print("本人說確定，才加 --large 再跑一次 ask；不然請挑一個只放素材的資料夾。")
             return EXIT_ASK_FIRST
-    probe = Masker([], []) if on else None  # only to learn which files could not go; nothing is coded or kept
     rows: list[dict[str, object]] = []
     asked = work / "asked"
     shutil.rmtree(str(asked), ignore_errors=True)
     for relative in list(tools):
         path = base / relative
-        _, why = prepared(path, probe, [])
+        _, why = prepared(path)
         if why:
             held.append((relative, why))
             continue
@@ -535,7 +495,6 @@ def ask(folder: Path | None, work: Path, large: bool) -> int:
         work / "plan.json",
         {
             "folder": str(base if folder is not None else asked),
-            "codes": on,
             "ai": folder is None,
             "files": rows,
             "held": held,
@@ -582,17 +541,14 @@ def _listed(folder: Path, given: str, planned: list[str]) -> str:
     raise RefusedError(f"{given} 不在 ask 列的清單裡；--take-deleted 給的要是清單上的那份檔")
 
 
-def _plan_as_asked(work: Path, site: str, persona: str, key: Callable[[], str] | str) -> tuple[dict[str, object], bool]:
-    """The list `ask` showed him and 「上傳前換代號」 as the site says now; refused when there is no list, when the
-    switch changed since, or when a file on it changed or went away: he is shown the list again before anything goes."""
+def _plan_as_asked(work: Path) -> dict[str, object]:
+    """The list `ask` showed him; refused when there is none, or when a file on it changed or went away: he is shown the
+    list again before anything goes."""
     found = read_json(work / "plan.json")
     plan = cast("dict[str, object]", found) if isinstance(found, dict) else {}
     if not plan.get("files"):
         raise RefusedError("還沒有要送的清單：先跑 ask，給本人看過再 send")
     folder = Path(str(plan["folder"]))
-    on = codes_on(site, persona, key)
-    if on != plan.get("codes"):
-        raise RefusedError("「上傳前換代號」在 ask 之後改了；重跑 ask，再給本人看一次清單")
     for row in cast("list[dict[str, object]]", plan["files"]):
         try:
             same = digest(folder / str(row["path"])) == row["sha256"]
@@ -600,49 +556,34 @@ def _plan_as_asked(work: Path, site: str, persona: str, key: Callable[[], str] |
             same = False
         if not same:
             raise RefusedError(f"{row['path']} 在 ask 之後改過或不見了；重跑 ask，再給本人看一次清單")
-    return plan, on
+    return plan
 
 
-def send(work: Path, names_file: Path | None, me: list[str], read: bool = False, take: list[str] | None = None) -> int:
-    """`send`: the files `ask` listed, exactly (masked here as the switch says), and what the site found.
+def send(work: Path, me: list[str], read: bool = False, take: list[str] | None = None) -> int:
+    """`send`: the files `ask` listed, exactly (their secrets dropped here), and what the site found.
     With `read` his one yes to `ask`'s sentence covered the read too: the site is told yes for every batch right
     after the upload, and no second sentence is put to him. `take` the files of the list he said yes for after the
     site held parts of them he had deleted: only those go, and those parts are read as new."""
     if take and not read:
         raise RefusedError("--take-deleted 要和 --read 一起用：本人說要收回那份，就是同意讀它")
     site, persona, key = options()
-    plan, on = _plan_as_asked(work, site, persona, key)
+    plan = _plan_as_asked(work)
     folder = Path(str(plan["folder"]))
     planned = cast("list[dict[str, object]]", plan["files"])
-    if names_file is None and (work / "names.txt").is_file():
-        names_file = work / "names.txt"
-    names = []
-    if names_file is not None:
-        names = [n.strip() for n in names_file.read_text(encoding="utf-8").splitlines() if n.strip()]
-    stored = read_json(work / "aliases.json")
-    table = cast("dict[str, object]", stored) if isinstance(stored, dict) else {}
-    entries = [(e[0], e[1], e[2]) for e in cast("list[list[str]]", table.get("entries") or []) if len(e) == 3]
     relatives = [str(r["path"]) for r in planned]
     if take:
         relatives = list(dict.fromkeys(_listed(folder, t, relatives) for t in take))
-    masker: Masker | None = None
-    if on:  # a code must not already be in the material, or the way back would be ambiguous
-        every = [_text(folder / r) for r in relatives if Path(r).suffix.lower() in TEXT_SUFFIXES]
-        masker = Masker(entries, [*every, *names])
     local: dict[str, str] = {}  # the name it goes up under -> its path here
     held = [] if take else [(str(h[0]), str(h[1])) for h in cast("list[list[str]]", plan.get("held") or [])]
     sending: list[tuple[str, bytes]] = []
     for relative in relatives:
-        data, why = prepared(folder / relative, masker, names, ai=plan.get("ai") is True)
+        data, why = prepared(folder / relative, ai=plan.get("ai") is True)
         if data is None:
             held.append((relative, why))
             continue
         code = f"src-{secrets.token_hex(6)}{Path(relative).suffix.lower()}"
         local[code] = relative
         sending.append((code, data))
-    if masker is not None:
-        table["entries"] = [list(e) for e in masker.entries]
-        write_json(work / "aliases.json", table)
     write_json(work / "files.json", local)
     answers: list[dict[str, object]] = []
     groups = batches(sending)
@@ -879,7 +820,6 @@ def _main(argv: list[str] | None = None) -> int:
     asking.add_argument("folder", type=Path, nargs="?", help="素材資料夾；用 --ai 時不給")
     asking.add_argument("--large", action="store_true", help="本人確定要送整個家目錄或超過 200 份時才加")
     sending = commands.add_parser("send", help="本人看過清單說好之後：送 ask 列的那些檔上網站切段")
-    sending.add_argument("--names-file", type=Path, help="上傳前換代號開著時要換成代號的人名，一行一個")
     sending.add_argument(
         "--read", action="store_true", help="本人對 ask 那一句（送與讀）說好：送完直接排進讀取，不再問"
     )
@@ -911,7 +851,7 @@ def _main(argv: list[str] | None = None) -> int:
                 raise RefusedError("要給素材資料夾，或用 --ai 送這台的 AI 對話紀錄")
             return ask(folder, work, bool(args.large))
         if args.command == "send":
-            return send(work, args.names_file, list(args.me), bool(args.read), list(args.take_deleted))
+            return send(work, list(args.me), bool(args.read), list(args.take_deleted))
         if args.command == "consent":
             return consent(work, args.answer != "no", args.answer == "rules")
         if args.command == "status":
