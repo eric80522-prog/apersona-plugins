@@ -60,6 +60,7 @@ def _post(site: str, message: dict[str, object], protocol: str, timeout: float) 
         # an ended token waits for that process's pair instead of failing the connection.
         bearer = apersona_login.bearer(site, timeout_s=timeout, trade=apersona_login.Trade.WAIT)
         headers = {
+            "X-Apersona-Core": "1",
             "Authorization": "Bearer " + bearer,
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",

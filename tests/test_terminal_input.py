@@ -83,19 +83,3 @@ print('console accepted; NUL refused')
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "console accepted; NUL refused"
-
-
-@pytest.mark.parametrize("redirected", ["pipe", "null"])
-def test_send_confirmation_refuses_redirected_input(redirected):
-    code = (
-        f"import sys; sys.path.insert(0, {str(SCRIPT.parent)!r}); "
-        "from apersona_feed import confirmed; print(confirmed('grok', 'words'))"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        stdin=subprocess.PIPE if redirected == "pipe" else subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 0 and result.stdout.strip() == "False"

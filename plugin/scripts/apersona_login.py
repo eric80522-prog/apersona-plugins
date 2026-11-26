@@ -4,8 +4,7 @@
                                            website; run again to go on waiting (a code lives ten minutes)
     apersona_login.py status               logged in or not, asked of the site (never prints a token)
     apersona_login.py refresh              trade an ending access token now, quietly (what the hook starts)
-    apersona_login.py logout               turn 收錄 off on the website if it is on (what it took in stays), sign
-                                           this machine out there and delete the credentials file
+    apersona_login.py logout               sign out this device on the site and delete the credentials file
 
 Standard library only, on whatever python3 the machine has (3.9 and up). The credentials are in
 `~/.apersona/plugin-credentials.json` (the folder 700, the file 600, except on Windows): site, client_id, access,
@@ -467,18 +466,8 @@ def logout(site: str) -> str:
 
 
 def sign_out(site: str) -> int:
-    """`logout`. With 收錄 on it goes off on the site first, keeping what it took in (nothing is asked, nothing
-    deleted); then the device signs out (`logout`), and every client's consent file on this machine goes."""
-    import apersona_hook  # beside this file: the one place that asks the site about 收錄 and tells it
-
-    if apersona_hook.capture_on_site(site):
-        refused = apersona_hook.tell_site(site, {"on": False}, "claude")
-        if refused:
-            print(f"網站沒收到收錄關閉（{refused}）；網站裝置頁請按「撤銷」")
-        else:
-            print("收錄已關閉。" + apersona_hook.KEPT_WORDS)
+    """Revoke this device and remove its local credential."""
     print(logout(site))
-    apersona_hook.forget_consents()
     return 0
 
 
@@ -491,7 +480,7 @@ def connection_check(site: str) -> str:
     except LoginError as e:
         return f"接通實測沒過：{e}。{retry}"
     request = urllib.request.Request(
-        site + "/api/memory/opening", headers={"Authorization": "Bearer " + key, "Accept": "application/json"}
+        site + "/api/memory/opening?standIn=0", headers={"Authorization": "Bearer " + key, "Accept": "application/json"}
     )
     try:
         with open_url(request, HTTP_TIMEOUT_S) as response:
