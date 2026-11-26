@@ -128,6 +128,9 @@ SLACK_DM_FOLDER = r"D[A-Z0-9]{8,}"
 #: a file whose own name says it is his LinkedIn export or résumé, the site's own words
 #: (`intake.planning.OWN_RECORD_NAME`): the name never goes up, so it goes with the file as `ownRecord`
 OWN_RECORD_NAME = r"linkedin|r[ée]sum[ée]|(?<![a-z])cv(?![a-z])|履歷|履历|简历|自傳|自传"
+#: what he says a batch of his own writing is for, the site's own list (`memory.types.MATERIAL_PURPOSES`): article
+#: 我的文章, about_me 關於我, rules 我的規則. Sent as 我寫的 with that 用途, so what is recalled of it says which
+PURPOSES = ("article", "about_me", "rules")
 
 
 class RefusedError(Exception):
@@ -273,9 +276,11 @@ def post_files(
     me: list[str],
     take: bool = False,
     origins: dict[str, dict[str, object]] | None = None,
+    purpose: str = "",
 ) -> dict[str, object]:
     seen = {name: (origins or {})[name] for name, _ in files if (origins or {}).get(name)}
     fields = [*who(persona).items(), *(("me", m) for m in me), *([("takeDeleted", "1")] if take else [])]
+    fields += [("relation", "mine"), ("purpose", purpose)] if purpose else []
     fields += [("origins", json.dumps(seen, ensure_ascii=False))] if seen else []
     body, kind = multipart(fields, files)
     request = urllib.request.Request(
@@ -590,12 +595,15 @@ def _plan_as_asked(work: Path) -> dict[str, object]:
     return plan
 
 
-def send(work: Path, me: list[str], take: list[str] | None = None) -> int:
+def send(work: Path, me: list[str], take: list[str] | None = None, purpose: str = "") -> int:
     """`send`: the files `ask` listed, exactly (their secrets dropped here), and what the site found, with the site's
     sentence for his yes to the read (its amounts and confirmation code). `take` the files of the list he said yes for
-    after the site held parts of them he had deleted: only those go, and those parts are taken as new."""
+    after the site held parts of them he had deleted: only those go, and those parts are taken as new. `purpose` what
+    he said these files of his own writing are for (`PURPOSES`); his AI records are conversations and have none."""
     site, persona, key = options()
     plan = _plan_as_asked(work)
+    if purpose and plan.get("ai") is True:
+        raise RefusedError("AI 對話紀錄是對話，不帶 --purpose；--purpose 只給他自己寫的文章、自介或規則")
     folder = Path(str(plan["folder"]))
     planned = cast("list[dict[str, object]]", plan["files"])
     relatives = [str(r["path"]) for r in planned]
@@ -620,7 +628,8 @@ def send(work: Path, me: list[str], take: list[str] | None = None) -> int:
     for i, group in enumerate(groups, 1):
         if len(groups) > 1:
             print(f"上傳第 {i} 批／共 {len(groups)} 批")
-        answers.append(patiently(partial(post_files, site, key, persona, group, me, bool(take), origins), "上傳"))
+        posting = partial(post_files, site, key, persona, group, me, bool(take), origins, purpose)
+        answers.append(patiently(posting, "上傳"))
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
     left_out = 0 if take else int(cast(int, plan.get("left_out") or 0))
     unread = [(str(f), str(why)) for f, why in cast("list[list[object]]", plan.get("rules_unread") or [])]
@@ -893,6 +902,12 @@ def _main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="本人說要收回的那份檔（ask 清單上的路徑，一份一個）：只送這幾份，刪過的內容當成新的來源",
     )
+    sending.add_argument(
+        "--purpose",
+        choices=PURPOSES,
+        default="",
+        help="本人說這批是他自己寫的、說了用途才加：article 我的文章、about_me 關於我、rules 我的規則",
+    )
     answer = commands.add_parser("consent")
     answer.add_argument("answer", choices=("yes", "no", "rules"))
     answer.add_argument("--words", default="", help="本人同意時親口說的那一句（要有確認碼）；AI 不能代為同意")
@@ -915,7 +930,7 @@ def _main(argv: list[str] | None = None) -> int:
                 raise RefusedError("要給素材資料夾，或用 --ai 送這台的 AI 對話紀錄")
             return ask(folder, work, bool(args.large))
         if args.command == "send":
-            return send(work, list(args.me), list(args.take_deleted))
+            return send(work, list(args.me), list(args.take_deleted), str(args.purpose))
         if args.command == "consent":
             return consent(work, args.answer != "no", args.answer == "rules", str(args.words), bool(args.keep_going))
         if args.command == "status":
