@@ -2,6 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "apersona",
   "version": "0.2.30",
+  "icon": "./.claude-plugin/icon.png",
   "description": "在 Claude Code 自動拿開場包和確認收件，並用 MCP 查本人記憶、判讀或手動送資料。",
   "author": {
     "name": "eric80522-prog"
