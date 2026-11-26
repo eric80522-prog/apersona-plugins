@@ -20,8 +20,8 @@
 
 ## Claude Code
 
-只要 MCP（不要開場包與每輪記憶）：
+讓助理透過 MCP 取開場包、依需要查記憶：
 
     claude mcp add --transport http apersona https://www.apersonaai.com/mcp
 
-要開場包與每輪記憶，請改裝外掛，見上一層的 README。
+想在 Claude Code 開新對話時自動取開場包，可安裝 [Claude Code 外掛](../README.md)。使用 Codex CLI 的人可以另外設定[每輪提示](../plugin/README.md)。
