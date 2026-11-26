@@ -72,9 +72,6 @@ CONSENT_TEXT = (
     "（AI 回覆只給決策中心看、算採用率，不讀進人格）；秘密先遮、可撤回、素材每日合併讀。"
 )
 CONSENT_SHA256 = hashlib.sha256(CONSENT_TEXT.encode()).hexdigest()
-#: the earlier text: a consent given on it keeps sending his typed text, never the AI's replies
-LEGACY_CONSENT_TEXT = "同意收錄本人在 Claude Code 新打的字；秘密先遮、可撤回、素材每日合併讀。"
-LEGACY_CONSENT_SHA256 = hashlib.sha256(LEGACY_CONSENT_TEXT.encode()).hexdigest()
 CODEX_CONSENT_TEXT = "同意收錄本人在 Codex 親自新打的字（codex exec 與子代理不收）；秘密先遮、可撤回、素材每日合併讀。"
 CODEX_CONSENT_SHA256 = hashlib.sha256(CODEX_CONSENT_TEXT.encode()).hexdigest()
 CODEX_INTERACTIVE = frozenset({"cli", "vscode"})
@@ -129,12 +126,12 @@ def consent(client: str = "claude") -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     record = cast("dict[str, object]", value)
-    wanted = (CODEX_CONSENT_SHA256,) if client == "codex" else (CONSENT_SHA256, LEGACY_CONSENT_SHA256)
+    wanted = (CODEX_CONSENT_SHA256,) if client == "codex" else (CONSENT_SHA256,)
     return record if record.get("on") is True and record.get("sha256") in wanted else {}
 
 
 def has_context_consent(approval: dict[str, object]) -> bool:
-    "Whether the consent on record is the current text, the only one that lets the AI's replies be sent."
+    "Whether the consent on record is Claude Code's, the only one that lets the AI's replies be sent."
     return approval.get("sha256") == CONSENT_SHA256
 
 
@@ -421,7 +418,7 @@ def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None
             "turnId": session + ":" + identifier,
             "messageId": identifier,
             "text": content,
-            "consentSha256": approval.get("sha256", CONSENT_SHA256),  # the text he agreed to, new or earlier
+            "consentSha256": approval.get("sha256", CONSENT_SHA256),  # the text he agreed to
         }
         request = urllib.request.Request(
             site.rstrip("/") + "/api/memory/conversation",
