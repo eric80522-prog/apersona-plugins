@@ -66,14 +66,34 @@ NOT_TYPED = (
 )
 #: the app's own notes around his text, in the same row
 REMINDERS = re.compile(r"\s*<system-reminder>.*?</system-reminder>", re.DOTALL)
+#: how every consent text ends now, and how it ended before (the site's CONSENT_END and EARLIER_CONSENT_END): a
+#: consent he gave on the earlier text stands as it was, he is not asked again
+CONSENT_END = "秘密先遮、可撤回；收進的字要本人在網站按了讀取才讀。"
+EARLIER_CONSENT_END = "秘密先遮、可撤回、素材每日合併讀。"
 #: word for word the site's DECISION_CONTEXT_CONSENT (the hook imports nothing of apersona); the site checks the hash
 CONSENT_TEXT = (
     "同意收錄本人在 Claude Code 新打的字，以及每次查判讀（lookup）前後那一句與 AI 的回覆當決策前後文"
-    "（AI 回覆只給決策中心看、算採用率，不讀進人格）；秘密先遮、可撤回、素材每日合併讀。"
+    "（AI 回覆只給決策中心看、算採用率，不讀進人格）；" + CONSENT_END
 )
-CONSENT_SHA256 = hashlib.sha256(CONSENT_TEXT.encode()).hexdigest()
-CODEX_CONSENT_TEXT = "同意收錄本人在 Codex 親自新打的字（codex exec 與子代理不收）；秘密先遮、可撤回、素材每日合併讀。"
-CODEX_CONSENT_SHA256 = hashlib.sha256(CODEX_CONSENT_TEXT.encode()).hexdigest()
+CODEX_CONSENT_TEXT = "同意收錄本人在 Codex 親自新打的字（codex exec 與子代理不收）；" + CONSENT_END
+
+
+def sha256_of(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def earlier_sha256(text: str) -> str:
+    "The hash of the same consent as it read before `CONSENT_END`."
+    return sha256_of(text[: -len(CONSENT_END)] + EARLIER_CONSENT_END)
+
+
+CONSENT_SHA256 = sha256_of(CONSENT_TEXT)
+CODEX_CONSENT_SHA256 = sha256_of(CODEX_CONSENT_TEXT)
+#: the hashes a consent on record may carry: the text now, or the one he agreed to before
+CONSENTS_HELD = {
+    "claude": (CONSENT_SHA256, earlier_sha256(CONSENT_TEXT)),
+    "codex": (CODEX_CONSENT_SHA256, earlier_sha256(CODEX_CONSENT_TEXT)),
+}
 CODEX_INTERACTIVE = frozenset({"cli", "vscode"})
 #: what he types himself, at a terminal, to turn 收錄 on; nothing else does
 CONSENT_PHRASE = "我同意"
@@ -126,13 +146,13 @@ def consent(client: str = "claude") -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     record = cast("dict[str, object]", value)
-    wanted = (CODEX_CONSENT_SHA256,) if client == "codex" else (CONSENT_SHA256,)
+    wanted = CONSENTS_HELD["codex" if client == "codex" else "claude"]
     return record if record.get("on") is True and record.get("sha256") in wanted else {}
 
 
 def has_context_consent(approval: dict[str, object]) -> bool:
     "Whether the consent on record is Claude Code's, the only one that lets the AI's replies be sent."
-    return approval.get("sha256") == CONSENT_SHA256
+    return approval.get("sha256") in CONSENTS_HELD["claude"]
 
 
 def consent_record(
