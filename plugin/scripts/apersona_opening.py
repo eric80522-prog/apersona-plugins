@@ -1,4 +1,4 @@
-"""Install or run only the Cursor SessionStart hook for the Apersona opening pack."""
+"""Get the Apersona opening pack for Cursor or an explicitly wired Antigravity hook."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def install(on: bool, site: str) -> None:
     kept = [
         item for item in hooks.get("sessionStart") or []
         if not (isinstance(item, dict) and any(
-            name in str(item.get("command", "")) for name in ("apersona_cursor.py", "apersona_feed.py")
+            name in str(item.get("command", "")) for name in ("apersona_opening.py", "apersona_cursor.py", "apersona_feed.py")
         ))
     ]
     if on:
@@ -68,11 +68,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("install", "uninstall", "run"))
     parser.add_argument("--site", default="")
+    parser.add_argument("--platform", choices=("cursor", "antigravity"), default="cursor")
+    parser.add_argument("--event", default="")
     args = parser.parse_args()
     if args.command == "run":
-        print(json.dumps(run(sys.stdin.read(), args.site), ensure_ascii=False))
-    else:
+        raw = sys.stdin.read()
+        if args.platform == "antigravity":
+            event = hook_fields(raw).get("hook_event_name") or args.event
+            text = run(raw, args.site).get("additional_context") if event == "SessionStart" else None
+            result = {"injectSteps": [{"systemMessage": {"systemMessage": text}}]} if text else {}
+        else:
+            result = run(raw, args.site)
+        print(json.dumps(result, ensure_ascii=False))
+    elif args.platform == "cursor":
         install(args.command == "install", checked_site(args.site) if args.site else "")
+    else:
+        parser.error("Antigravity 開場請由本人把 SessionStart hook 接上")
     return 0
 
 

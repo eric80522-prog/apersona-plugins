@@ -445,15 +445,20 @@ def codex_main(kind: str) -> int:
     return 0
 
 
+def set_switch(client: str, on: bool) -> str:
+    """Toggle this client's automatic opening and prompts."""
+    path = switch_file(client)
+    if path is None:
+        raise MissError("not_configured")
+    write_switch(path, on)
+    return "Apersona 開場與提示已" + ("開啟。" if on else "停用。")
+
+
 def switch_command(client: str, on: bool, project: str | None) -> int:
     "`--switch on|off`: the whole machine's switch, or with `--project-directory` this project's; the exit code."
     try:
         if project is None:
-            path = switch_file(client)
-            if path is None:
-                raise MissError("not_configured")
-            write_switch(path, on)
-            print("Apersona 開場與提示已" + ("開啟。" if on else "停用。"))
+            print(set_switch(client, on))
             return 0
         set_project(project, on)
     except MissError:

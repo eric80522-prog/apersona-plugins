@@ -19,7 +19,7 @@ Claude.ai／ChatGPT／Grok 這類純連接器（只加遠端 MCP、你的電腦�
 
 ## 開場與記憶
 
-Claude Code 開新對話會自動拿開場包。需要相關記憶時，助理使用 `recall`，判讀用 `lookup`。Codex CLI 用下方的可選 hooks 取開場與每輪提示。Cursor 若需要自動開場，用 `python plugin/scripts/apersona_cursor.py install`，重開後生效；仍可獨立用遠端 MCP＋OAuth。
+Claude Code 開新對話會自動拿開場包。需要相關記憶時，助理使用 `recall`，判讀用 `lookup`。Codex CLI 用下方的可選 hooks 取開場與每輪提示。Cursor 若需要自動開場，用 `python plugin/scripts/apersona_opening.py install`，重開後生效；仍可獨立用遠端 MCP＋OAuth。
 
 開場 hook 只帶對話識別和專案雜湊，向網站取開場資料。用 `/apersona:off` 停用，`/apersona:on` 恢復，可只對目前專案操作。開發工具見 [Apersona 輔助開發外掛](https://github.com/eric80522-prog/apersona-dev-plugin)。
 
@@ -73,7 +73,7 @@ Gemini CLI 安裝：
 
 兩者首次都可說「用 Apersona 幫我處理這件事」。成功須實際收到 `opening` 封包，接著沿用回傳的 `conversation_id` 呼叫 `lookup`／`recall`，再以來源回答目前任務。需要工作區時才選，授權失效時重新驗證同一連線；只有安裝成功、OAuth 跳轉或空泛回答不算驗收。後續 `recall.received` 只能回報同一連線完整收到的收件識別。
 
-Antigravity 的 SessionStart／PreInvocation 只注入簡短工具呼叫指引，不發網路請求、不讀 transcript、不儲存使用者輸入；不是已取回本人的開場包，也不強制每輪重拿。沒有 Stop handler，因此不攔截停止。Gemini 包沒有 hook。Antigravity `lastUserInput` 是最新輸入，`invocationNum` 是模型呼叫次數，不能當穩定的人類輪次；停用或移除請用宿主的外掛管理；Gemini 可用 `gemini extensions disable apersona`／`gemini extensions uninstall apersona`。移除外掛不等於撤銷 OAuth，需在網站「授權裝置與連線」另行撤銷。
+Antigravity 的 SessionStart／PreInvocation 只注入簡短工具呼叫指引，不發網路請求、不讀 transcript、不儲存使用者輸入；不是已取回本人的開場包，也不強制每輪重拿。沒有 Stop handler，因此不攔截停止。Gemini 包沒有 hook。Antigravity `lastUserInput` 是最新輸入，`invocationNum` 是模型呼叫次數，不能當穩定的人類輪次；已有手動接線的 Antigravity 使用者可用 `python scripts/apersona_opening.py run --platform antigravity --event SessionStart`，開場由本機裝置登入取得。停用或移除請用宿主的外掛管理；Gemini 可用 `gemini extensions disable apersona`／`gemini extensions uninstall apersona`。移除外掛不等於撤銷 OAuth，需在網站「授權裝置與連線」另行撤銷。
 
 格式依 [Antigravity Build Plugins](https://antigravity.google/docs/build-plugins)、[Antigravity MCP](https://antigravity.google/docs/mcp)、[Gemini extension reference](https://geminicli.com/docs/extensions/reference/) 與 [Gemini MCP](https://geminicli.com/docs/tools/mcp-server/)。MCP instructions 的宿主處理不同：Gemini CLI 會加入系統指引；Antigravity 的延遲探索會存 instructions.md，不能據此宣稱每輪自動呼叫；Google ADK 需應用端另外接開場指引，不能當成 Gemini CLI extension。
 
