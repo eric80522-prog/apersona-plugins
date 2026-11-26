@@ -33,7 +33,6 @@ python 3.9 needs around several). No key is read or written: the site is reached
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -50,28 +49,30 @@ from apersona_mask import redact_secrets  # noqa: E402
 from apersona_projects import allows  # noqa: E402
 from apersona_safe import EXIT_FAILED, STATUS_EXITS, exit_line, read_json, terminal_input, write_replacing  # noqa: E402,E501
 
-#: his consent text per platform; the site holds the same words (`memory/conversation.py`) and checks the hash
+#: his consent text per platform; the site holds the same words (`application/capture.py`) and checks the hash
 CONSENT_TEXTS = {
     "gemini": (
         "同意收錄本人在 Gemini CLI 明示送入的字（沒有穩定輪次識別，不自動收；模型回答與工具參數不收）；"
-        "秘密先遮、可撤回、素材每日合併讀。"
+        + hook.CONSENT_END
     ),
     "grok": (
         "同意收錄本人在 Grok 明示送入的字（沒有每輪 hook，不自動收；connector 改寫的內容與工具參數不收）；"
-        "秘密先遮、可撤回、素材每日合併讀。"
+        + hook.CONSENT_END
     ),
     "pretool": (
         "同意收錄本人在只有工具前事件的 AI 工具明示送入的字（工具名稱、參數與輸出不收）；"
-        "秘密先遮、可撤回、素材每日合併讀。"
+        + hook.CONSENT_END
     ),
     "cursor": (
         "同意收錄本人在 Cursor 送出的字（以 Cursor 給的 generation_id 當輪次識別；模型回答、工具參數與輸出不收）；"
-        "秘密先遮、可撤回、素材每日合併讀。"
+        + hook.CONSENT_END
     ),
 }
 #: platforms with no capture (so no consent text): Antigravity only receives the opening
 NO_CAPTURE = ("antigravity",)
-CONSENT_SHA256 = {name: hashlib.sha256(text.encode()).hexdigest() for name, text in CONSENT_TEXTS.items()}
+CONSENT_SHA256 = {name: hook.sha256_of(text) for name, text in CONSENT_TEXTS.items()}
+#: the hashes a consent on record may carry: the text now, or the one he agreed to before (`hook.CONSENTS_HELD`)
+CONSENTS_HELD = {name: (CONSENT_SHA256[name], hook.earlier_sha256(text)) for name, text in CONSENT_TEXTS.items()}
 #: hook event -> what it may do. `flush` wakes the sending of what is already consented; `id_required` is a human
 #: prompt with no stable id (nothing is taken); `capture` keeps the submitted prompt under its generation id;
 #: `opening` hands the opening pack back to the tool; an event not listed is not ours. Grok has no hook at all.
@@ -126,7 +127,7 @@ def consent(platform: str) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     record = cast("dict[str, object]", value)
-    return record if record.get("on") is True and record.get("sha256") == CONSENT_SHA256[platform] else {}
+    return record if record.get("on") is True and record.get("sha256") in CONSENTS_HELD[platform] else {}
 
 
 def write_consent(platform: str, on: bool, by_agent: bool = False, words: str = "") -> dict[str, object]:
@@ -302,7 +303,7 @@ def post(platform: str, site: str, key: str, row: dict[str, str], deadline: floa
         "origin": "human",
     }
     request = urllib.request.Request(
-        site.rstrip("/") + "/api/memory/conversation",
+        site.rstrip("/") + "/api/dev/conversation",
         data=json.dumps(payload).encode(),
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         method="POST",
