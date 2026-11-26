@@ -41,14 +41,16 @@ def install(on: bool, site: str) -> None:
 
 def run(raw: str, site: str) -> dict[str, str]:
     fields = hook_fields(raw)
-    if not allows(fields.get("cwd")):
+    paths = fields.get("workspace_roots") or fields.get("workspacePaths")
+    cwd = fields.get("cwd") or (paths[0] if isinstance(paths, list) and paths else None)
+    if fields.get("stop_hook_active") is True or not allows(cwd):
         return {}
-    session = fields.get("conversation_id") or fields.get("session_id")
+    session = fields.get("conversation_id") or fields.get("conversationId") or fields.get("session_id")
     try:
         started = time.monotonic()
         resolved, key = login_bearer(site, BUDGET_S)
         text, _ = fetch_text(
-            opening_request(resolved, key, session, fields.get("cwd")),
+            opening_request(resolved, key, session, cwd),
             BUDGET_S - (time.monotonic() - started),
         )
     except MissError:
@@ -60,7 +62,7 @@ def run(raw: str, site: str) -> dict[str, str]:
         visible = OPENING_CUT_NOTICE + "\n" + visible[:MAX_TEXT]
     if isinstance(session, str) and session:
         identifier = "".join(clean(session).split())
-        return {"additional_context": fenced(visible) + f'\n本段對話識別：{identifier}。'}
+        return {"additional_context": fenced(visible) + f'\n本段對話識別：{identifier}。叫 apersona 的 lookup、recall、opening 時帶 conversation_id="{identifier}"。'}
     return {"additional_context": fenced(visible)}
 
 
@@ -78,7 +80,8 @@ def main() -> int:
             text = run(raw, args.site).get("additional_context") if event == "SessionStart" else None
             result = {"injectSteps": [{"systemMessage": {"systemMessage": text}}]} if text else {}
         else:
-            result = run(raw, args.site)
+            event = hook_fields(raw).get("hook_event_name") or args.event
+            result = run(raw, args.site) if event in ("sessionStart", "") else {}
         print(json.dumps(result, ensure_ascii=False))
     elif args.platform == "cursor":
         install(args.command == "install", checked_site(args.site) if args.site else "")
