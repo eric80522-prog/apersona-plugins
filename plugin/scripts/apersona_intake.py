@@ -22,7 +22,9 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       text file that is not UTF-8 is read as Big5 / cp950, masked, and sent as UTF-8, or not sent when
                       it cannot be read. The site keeps the whole text of each file it reads (secrets dropped) and
                       reads only its cut parts. Each file goes up under a random name (`src-<hex>` with its
-                      extension): its path stays here, in `files.json`. The files go in batches the site takes
+                      extension): its path stays here, in `files.json`; what the path says that the site reads
+                      by goes with it instead (`origins`: a Slack day's 對話種類 by its folder, a LinkedIn export or
+                      résumé by its name), never the path or the name itself. The files go in batches the site takes
                       (`POST /api/intake/files`, at most `MAX_FILES` files and `MAX_TOTAL_BYTES` a batch, a file over
                       `MAX_FILE_BYTES` not sent); the site keeps them prepared, waiting for his yes, reads nothing and
                       spends nothing. What it found is printed as the site's data (`fenced`), and then the site's
@@ -60,6 +62,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -117,6 +120,14 @@ TOO_LARGE_HERE = f"檔案太大（一份最多 {MAX_FILE_BYTES // (1024 * 1024)}
 NOT_UTF8_HERE = "不是 UTF-8、Big5 文字，這份沒送；先另存成 UTF-8 再送"
 MASK_FAILED_HERE = "這份在本機遮不了秘密，沒送；先另存成 UTF-8 的 .txt 或 .md 再送"
 LINKED_HERE = "這是捷徑（連結），不追過去讀，這份沒送"
+#: a Slack export keeps each conversation's days (`2024-02-14.json`) in a folder: a direct message's is named by its
+#: id (D…, upper case), a channel's by its name, a group DM's `mpdm-…`. The folder never goes up, so what it says goes
+#: with the file as its 對話種類 (`origins`, the site's `FileOrigin.chat_kind`)
+SLACK_DAY = r"\d{4}-\d{2}-\d{2}\.json"
+SLACK_DM_FOLDER = r"D[A-Z0-9]{8,}"
+#: a file whose own name says it is his LinkedIn export or résumé, the site's own words
+#: (`intake.planning.OWN_RECORD_NAME`): the name never goes up, so it goes with the file as `ownRecord`
+OWN_RECORD_NAME = r"linkedin|r[ée]sum[ée]|(?<![a-z])cv(?![a-z])|履歷|履历|简历|自傳|自传"
 
 
 class RefusedError(Exception):
@@ -240,6 +251,20 @@ def multipart(fields: list[tuple[str, str]], files: list[tuple[str, bytes]]) -> 
     return b"".join(out), f"multipart/form-data; boundary={boundary}"
 
 
+def origin_of(relative: str) -> dict[str, object]:
+    """What this machine sees of a file that the random name it goes up under does not say (the site's
+    `FileOrigin`): a Slack day's 對話種類 by the folder it is kept in, and whether its own name says it is his
+    LinkedIn export or résumé. Empty when it says neither; nothing of the folder or the name itself goes up."""
+    path = Path(relative)
+    out: dict[str, object] = {}
+    folder = path.parent.name
+    if folder and re.fullmatch(SLACK_DAY, path.name):
+        out["chatKind"] = "one_to_one" if re.fullmatch(SLACK_DM_FOLDER, folder) else "group"
+    if re.search(OWN_RECORD_NAME, path.name, re.IGNORECASE):
+        out["ownRecord"] = True
+    return out
+
+
 def post_files(
     site: str,
     key: Callable[[], str] | str,
@@ -247,8 +272,11 @@ def post_files(
     files: list[tuple[str, bytes]],
     me: list[str],
     take: bool = False,
+    origins: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    seen = {name: (origins or {})[name] for name, _ in files if (origins or {}).get(name)}
     fields = [*who(persona).items(), *(("me", m) for m in me), *([("takeDeleted", "1")] if take else [])]
+    fields += [("origins", json.dumps(seen, ensure_ascii=False))] if seen else []
     body, kind = multipart(fields, files)
     request = urllib.request.Request(
         site + FILES_PATH, data=body, headers=_headers(key, **{"Content-Type": kind}), method="POST"
@@ -574,6 +602,7 @@ def send(work: Path, me: list[str], take: list[str] | None = None) -> int:
     if take:
         relatives = list(dict.fromkeys(_listed(folder, t, relatives) for t in take))
     local: dict[str, str] = {}  # the name it goes up under -> its path here
+    origins: dict[str, dict[str, object]] = {}  # the name it goes up under -> what this machine saw of it
     held = [] if take else [(str(h[0]), str(h[1])) for h in cast("list[list[str]]", plan.get("held") or [])]
     sending: list[tuple[str, bytes]] = []
     for relative in relatives:
@@ -583,6 +612,7 @@ def send(work: Path, me: list[str], take: list[str] | None = None) -> int:
             continue
         code = f"src-{secrets.token_hex(6)}{Path(relative).suffix.lower()}"
         local[code] = relative
+        origins[code] = {} if plan.get("ai") is True else origin_of(relative)
         sending.append((code, data))
     write_json(work / "files.json", local)
     answers: list[dict[str, object]] = []
@@ -590,7 +620,7 @@ def send(work: Path, me: list[str], take: list[str] | None = None) -> int:
     for i, group in enumerate(groups, 1):
         if len(groups) > 1:
             print(f"上傳第 {i} 批／共 {len(groups)} 批")
-        answers.append(patiently(partial(post_files, site, key, persona, group, me, bool(take)), "上傳"))
+        answers.append(patiently(partial(post_files, site, key, persona, group, me, bool(take), origins), "上傳"))
     write_json(work / "uploads.json", {"answers": answers, "consent": None})
     left_out = 0 if take else int(cast(int, plan.get("left_out") or 0))
     unread = [(str(f), str(why)) for f, why in cast("list[list[object]]", plan.get("rules_unread") or [])]
