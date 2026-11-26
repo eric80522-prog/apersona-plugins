@@ -11,7 +11,7 @@ Claude Code 不會自己更新第三方外掛庫的外掛（官方預設只有 A
 
 0.2.3 起，Claude Code 外掛內的 MCP 工具與 hook 共用這次裝置登入。外掛用本機 Python 標準函式庫將 stdio JSON-RPC 轉送到網站 `/mcp`，不另開第二筆 OAuth 授權。登入存在這台的 `~/.apersona/plugin-credentials.json`（資料夾 700、檔案 600；Windows 沿用資料夾權限）。沒登入時 hook 不擋提問，MCP 回覆需要先登入；已安裝舊版者更新外掛後重新開啟 Claude Code，讓它重新載入 MCP 設定。
 
-Claude Code 的 `PostToolUse` 只從成功、完整的 Apersona recall 工具結果取出對話識別與收件識別，以同一裝置登入確認收到。不是從使用者或模型自己寫的文字取識別；錯誤、截斷或未知結果格式不確認。下一輪 transcript 補送僅接受可配對的 recall 結果且回覆對話識別與宿主相符，每批最多 256 筆。Codex 與純遠端連接器沒有這條自動確認路徑，必須由同一憑證的 MCP 客戶端在 recall 的 `received` 帶回收件識別，並沿用回覆的 `conversation_id`。不同裝置或不同 OAuth 授權不能替彼此確認。
+Claude Code 的 `PostToolUse` 只從成功、完整的 Apersona recall 工具結果取出對話識別與收件識別，以同一裝置登入確認收到。不是從使用者或模型自己寫的文字取識別；錯誤、截斷或未知結果格式不確認。Codex 與純遠端連接器沒有這條自動確認路徑，必須由同一憑證的 MCP 客戶端在 recall 的 `received` 帶回收件識別，並沿用回覆的 `conversation_id`。不同裝置或不同 OAuth 授權不能替彼此確認。
 
 這條接法已以隔離本機服務與 Python 3.9 驗證；Claude Code 真平台的事件格式、更新後掛載與重連仍需實機驗收，不能把本機模擬當作已驗收。事件契約依 [Claude Code hooks 文件](https://code.claude.com/docs/en/hooks)。
 
