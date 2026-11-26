@@ -100,7 +100,7 @@ def opening_request(site: str, key: str, session: object = None, cwd: object = N
     """The 開場包 request; with the hook's `session` the site keeps it on the receipt as the conversation, and with
     its `cwd` the pack holds the rules of that project besides those of every project (`project_key`)."""
     url = site.rstrip("/") + "/api/memory/opening"
-    query = {"standIn": "0"}
+    query = {"hooks": "0"}
     if isinstance(session, str) and session:
         query["sessionId"] = session
     if isinstance(cwd, str) and cwd:

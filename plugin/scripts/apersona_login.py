@@ -480,7 +480,7 @@ def connection_check(site: str) -> str:
     except LoginError as e:
         return f"接通實測沒過：{e}。{retry}"
     request = urllib.request.Request(
-        site + "/api/memory/opening?standIn=0", headers={"Authorization": "Bearer " + key, "Accept": "application/json"}
+        site + "/api/memory/opening?hooks=0", headers={"Authorization": "Bearer " + key, "Accept": "application/json"}
     )
     try:
         with open_url(request, HTTP_TIMEOUT_S) as response:
