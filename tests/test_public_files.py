@@ -18,11 +18,11 @@ def public_files() -> list[Path]:
 
 
 def test_nothing_in_the_plugin_folder_names_the_private_repo_or_its_paths():
-    found = {
-        p.relative_to(PLUGIN).as_posix(): sorted(set(PRIVATE.findall(p.read_text(encoding="utf-8"))))
-        for p in public_files()
-    }
-    assert {name: hits for name, hits in found.items() if hits} == {}
+    for path in public_files():
+        # PNG metadata may carry readable text next to the binary image data.
+        errors = "replace" if path.suffix == ".png" else "strict"
+        contents = path.read_text(encoding="utf-8", errors=errors)
+        assert not PRIVATE.search(contents), path.relative_to(PLUGIN)
 
 
 def test_public_scripts_keep_python_3_9_syntax_even_when_developed_on_a_newer_python():
