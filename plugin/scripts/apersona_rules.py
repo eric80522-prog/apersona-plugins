@@ -2,7 +2,7 @@
 """規矩檔修改提案: the rules his opening carries for this project that the project's rule files
 do not say yet, proposed as lines to add to the file kept out of git; written only after his own yes.
 
-The rule files are read on this machine only and never sent: the site gives the rules (`GET /api/memory/rules`, the
+The rule files are read on this machine only and never sent: the site gives the rules (`GET /api/dev/rules`, the
 same rules the opening for this project carries), the comparison is here. Standard library only, like the hooks.
 
 - `propose [--cwd <folder>]`  prints the project's rule files read (`RULE_FILES`; a link to a file already read, as
@@ -16,7 +16,7 @@ same rules the opening for this project carries), the comparison is here. Standa
 - `flow`                       流程話的出口 (16.2 第 3 項): words he says again that are no rule (「狀態回報」),
                                the ones said in the most conversations, each with its number and exit: 以後替我回
                                (`stand_in`, only words that tell the AI to go on) or 做成指令 (`command`).
-- `exit <id> stand_in`         his choice, kept on the site (`POST /api/memory/flow-exit`): 代答 names those words.
+- `exit <id> stand_in`         his choice, kept on the site (`POST /api/dev/flow-exit`): 代答 names those words.
 - `exit <id> command --name <n>`  his choice, then the slash command `/<n>` written on this machine
                                (`<CLAUDE_CONFIG_DIR or ~/.claude>/commands/<n>.md`, his words as its prompt; a command
                                of that name already there is never overwritten). Both only after his own yes.
@@ -63,7 +63,7 @@ def site_json(path: str, query: dict[str, str] | None = None, body: dict[str, ob
 
 def listed(cwd: Path, name: str) -> list[dict[str, object]]:
     "One list the site gives for the project of `cwd`: `rules` (what its opening carries) or `flow` (流程話)."
-    body = site_json("/api/memory/rules", {"project": project_key(str(cwd))})
+    body = site_json("/api/dev/rules", {"project": project_key(str(cwd))})
     found = cast("dict[str, object]", body).get(name) if isinstance(body, dict) else None
     if not isinstance(found, list):
         raise MissError("bad_response")
@@ -202,7 +202,7 @@ def choose(rule: str, chosen: str, name: str) -> int:
         print(f"沒有這句流程話，或指令名不是小寫英數與 -、或已有同名的指令（{path}）；沒有改任何東西。")
         print(exit_line(EXIT_REFUSED))
         return EXIT_REFUSED
-    site_json("/api/memory/flow-exit", body={"ruleId": int(rule), "exit": chosen})
+    site_json("/api/dev/flow-exit", body={"ruleId": int(rule), "exit": chosen})
     if chosen == "command":
         path.parent.mkdir(parents=True, exist_ok=True)
         head = f"---\ndescription: 你常打的「{said}」（Apersona 流程話做成的指令）\n---\n\n"

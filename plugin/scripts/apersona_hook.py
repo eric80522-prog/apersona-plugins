@@ -226,7 +226,7 @@ def capture_on_site(hint: str) -> bool:
     try:
         site, key = login_bearer(hint, CONSENT_REPORT_S)
         request = urllib.request.Request(
-            site.rstrip("/") + "/api/memory/capture-consent", headers={"Authorization": "Bearer " + key}
+            site.rstrip("/") + "/api/dev/capture-consent", headers={"Authorization": "Bearer " + key}
         )
         body = fetch_json(request, CONSENT_REPORT_S)
     except MissError:
@@ -274,7 +274,7 @@ def tell_site(hint: str, record: dict[str, object], tool: str) -> str:
         if isinstance(words, str):
             payload["ownerWords"] = words
         request = urllib.request.Request(
-            site.rstrip("/") + "/api/memory/capture-consent",
+            site.rstrip("/") + "/api/dev/capture-consent",
             data=json.dumps(payload).encode(),
             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
             method="POST",
@@ -441,7 +441,7 @@ def send_captured(site: str, key: str, hook_input: str, deadline: float) -> None
             "consentSha256": approval.get("sha256", CONSENT_SHA256),  # the text he agreed to
         }
         request = urllib.request.Request(
-            site.rstrip("/") + "/api/memory/conversation",
+            site.rstrip("/") + "/api/dev/conversation",
             data=json.dumps(payload).encode(),
             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
             method="POST",
@@ -577,7 +577,7 @@ def stand_in(site: str, key: str, fields: dict[str, object], left_s: float) -> s
         ask["ownerNext"] = redact_secrets(since[0][1][:STAND_IN_NEXT_CHARS])
         ask["tookBack"] = said_took_back(rows, since[0][0])
     request = urllib.request.Request(
-        site.rstrip("/") + ("/api/memory/stand-in/report" if report else "/api/memory/stand-in"),
+        site.rstrip("/") + ("/api/dev/stand-in/report" if report else "/api/dev/stand-in"),
         data=json.dumps(ask).encode("utf-8"),
         headers={"Authorization": "Bearer " + key, "Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
@@ -771,7 +771,7 @@ def capture_decision_context(
                     "consentSha256": CONSENT_SHA256,
                 }
                 request = urllib.request.Request(
-                    site.rstrip("/") + "/api/memory/decision-context",
+                    site.rstrip("/") + "/api/dev/decision-context",
                     data=json.dumps(payload).encode(),
                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
                     method="POST",
@@ -1316,7 +1316,7 @@ def codex_stop(data: Path, site: str, key: str, fields: dict[str, object], deadl
                     "consentSha256": CODEX_CONSENT_SHA256,
                 }
                 request = urllib.request.Request(
-                    site.rstrip("/") + "/api/memory/conversation",
+                    site.rstrip("/") + "/api/dev/conversation",
                     data=json.dumps(payload).encode(),
                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
                     method="POST",

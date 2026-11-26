@@ -303,7 +303,7 @@ def post(platform: str, site: str, key: str, row: dict[str, str], deadline: floa
         "origin": "human",
     }
     request = urllib.request.Request(
-        site.rstrip("/") + "/api/memory/conversation",
+        site.rstrip("/") + "/api/dev/conversation",
         data=json.dumps(payload).encode(),
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         method="POST",
