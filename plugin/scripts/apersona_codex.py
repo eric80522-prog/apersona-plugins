@@ -1,21 +1,4 @@
-"""Put the three Apersona hooks (開場包, 每輪記憶, 收錄) into the Codex CLI, or take them out again. For Codex only;
-Claude Code uses the plugin itself.
-
-    python apersona_codex.py install [--site URL]
-    python apersona_codex.py uninstall | on | off | status | consent yes|no [--by-agent]
-
-Standard library only, on python 3.9 and up. The hook script and what it imports are copied to
-`~/.apersona/codex/bin/` (this manual-install route uses absolute paths in hooks.json independently of a packaged
-plugin's environment variables), the site goes to `~/.apersona/codex/config.json`, and the handlers are merged into
-`<CODEX_HOME or ~/.codex>/hooks.json` without touching anyone else's. The hooks reach the site with the same device
-login as the Claude Code plugin (`~/.apersona/plugin-credentials.json`): when there is none, install runs it (an
-address and a short code, then it waits for him to press 允許). No key is read or written anywhere.
-
-`config.toml` is never written: the MCP lines are only printed. Codex reaches a Streamable HTTP MCP server with OAuth
-itself (`codex mcp add <name> --url <url>`, then `codex mcp login <name>`, registering by DCR; Codex's MCP page,
-read 2026-11-07), so the fixed address `<site>/mcp` needs no token from us at all, and nothing long-lived is written
-into Codex's settings.
-"""
+"""將 Apersona 開場與每輪提示裝入 Codex CLI，保留其他 hooks 與 MCP 設定。"""
 
 from __future__ import annotations
 
@@ -52,7 +35,6 @@ CONTEXT_LIMIT = 20_000
 EVENTS = (
     ("SessionStart", "opening", 5, CONTEXT_LIMIT),
     ("UserPromptSubmit", "turn", 5, CONTEXT_LIMIT),
-    ("Stop", "stop", 10, 0),
 )
 
 
@@ -165,7 +147,7 @@ def ensure_login(site: str) -> bool:
     if apersona_login.logged_in(site):
         print(f"已登入 {site}（與 Claude Code 外掛共用同一份登入）")
         return True
-    print(f"這台還沒登入 {site}；開場包、每輪記憶與收錄都要先登入：")
+    print(f"這台還沒登入 {site}；開場包與每輪記憶都要先登入：")
     try:
         done = apersona_login.login(site, lambda line: print(line, flush=True))
     except apersona_login.LoginError as e:
@@ -217,10 +199,9 @@ def install(site: str) -> int:
     print(f"已裝好：{hooks_path}" + (f"（原檔備份在 {backup}）" if backup else ""))
     print(f"設定檔：{config_path}（只記網站網址；不放任何金鑰）")
     ensure_login(site)
-    ask_consent(script)
     print()
     print("下一步：")
-    print("  1. 打開 Codex，執行 /hooks，信任這三個 apersona hook（Codex 要你信任一次才會跑）。")
+    print("  1. 打開 Codex，執行 /hooks，信任這兩個 apersona hook（Codex 要你信任一次才會跑）。")
     print("  2. 把 MCP 加進 Codex（固定網址，Codex 自己走 OAuth 登入，不用金鑰）：")
     print(f"     codex mcp add apersona --url {site}/mcp")
     print("     codex mcp login apersona")
@@ -245,7 +226,7 @@ def uninstall() -> int:
             (data / "bin" / name).unlink(missing_ok=True)
     except OSError as e:
         raise InstallError(f"刪除失敗（{type(e).__name__}：{e}）") from None
-    print("已刪掉設定檔與複製的 hook 腳本；記錄、同意檔與暫存留在 " + str(data))
+    print("已刪掉設定檔與複製的 hook 腳本；記錄留在 " + str(data))
     print("MCP 連線要自己拿掉：codex mcp remove apersona")
     print(
         "登入共用 Claude Code 外掛的那一份；要登出這台："
@@ -263,7 +244,7 @@ def set_switch(on: bool, project: str | None = None) -> int:
             load_hook().set_project(project, on)
         except (OSError, ValueError) as error:
             raise InstallError(str(error)) from None
-        print("專案 hook 已" + ("開啟；只收錄重新開啟後的內容" if on else "停用"))
+        print("專案 hook 已" + ("開啟；恢復開場與提示" if on else "停用"))
         return 0
     hook = load_hook()
     try:
@@ -290,83 +271,18 @@ def status() -> int:
     if site:
         print("登入：" + ("已登入 " + site if apersona_login.logged_in(site) else "還沒登入 " + site))
     print("開場包與每輪記憶：" + ("關" if hook.switched_off(data) else "開"))
-    print("收錄：" + ("開（Codex 版同意）" if hook.consent("codex") else "關"))
-    return 0
-
-
-def record_consent(script: Path, answer: str) -> bool:
-    "Have the copied hook write the consent file (its text's hash is the one recorded); True when it did."
-    try:
-        hook = load_hook(script)
-        hook.report_consent("codex", hook.write_consent("codex", answer == "yes"))  # the site's copy: best effort
-    except OSError:
-        return False
-    return True
-
-
-def ask_consent(script: Path) -> bool:
-    """Show the Codex consent text (read from the copied hook, whose hash is the one recorded) and turn 收錄 on only
-    for the exact phrase typed by a person at a terminal; any other answer records it off. True when it is on."""
-    hook = load_hook(script)
-    was_on = bool(hook.consent("codex"))
-    run_it = f"{quote(sys.executable)} {quote(str(Path(__file__).resolve()))} consent"
-    if not terminal_input():
-        print(
-            "收錄現在是開的。要關掉：" + run_it + " no"
-            if was_on
-            else "收錄現在是關的。要打開，請在終端機執行（會先給你看同意書）：" + run_it + " yes"
-        )
-        return was_on
-    print()
-    print("要不要開啟收錄？目前是" + ("開" if was_on else "關") + "。同意書：")
-    print("  " + hook.CODEX_CONSENT_TEXT)
-    try:
-        answer = input(f"要開，請輸入「{hook.CONSENT_PHRASE}」；其他任何輸入都是不開：").strip()
-    except EOFError:
-        answer = ""
-    except OSError:
-        answer = ""
-    if answer != hook.CONSENT_PHRASE:
-        if not record_consent(script, "no"):
-            print("記錄「不同意」失敗；請執行 " + run_it + " no 確認收錄是關的。")
-            return was_on
-        print("收錄已關閉。之後想開：" + run_it + " yes")
-        return False
-    if not record_consent(script, "yes"):
-        print("記錄同意失敗，收錄維持原狀。")
-        return was_on
-    print("收錄已開啟；隨時可用 consent no 撤回。")
-    return True
-
-
-def set_consent(answer: str, by_agent: bool = False, words: str = "") -> int:
-    "`consent yes|no`; `--by-agent` is an AI tool he authorized opening it with no terminal (the hook's own rule)."
-    script = data_home() / "bin" / HOOK_NAME
-    if not script.exists():
-        raise InstallError("還沒安裝；先執行 install")
-    if answer == "yes" and by_agent:
-        return int(load_hook(script).answer_consent("codex", "yes", True, words))
-    if answer == "yes":
-        return 0 if ask_consent(script) else 1
-    if not record_consent(script, "no"):
-        return 1
-    print("收錄已關閉。")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apersona_codex.py", description="把 Apersona 的 hook 裝進 Codex")
     commands = parser.add_subparsers(dest="command", required=True)
-    add = commands.add_parser("install", help="裝三個 hook（沒登入就先跑裝置碼登入）")
+    add = commands.add_parser("install", help="裝兩個 hook（沒登入就先跑裝置碼登入）")
     add.add_argument("--site", default="", help="只有連自己架的網站才填；預設 https://www.apersonaai.com")
     for name in ("uninstall", "on", "off", "status"):
         command = commands.add_parser(name)
         if name in ("on", "off"):
             command.add_argument("--project", metavar="DIRECTORY")
-    ask = commands.add_parser("consent")
-    ask.add_argument("answer", choices=("yes", "no"))
-    ask.add_argument("--by-agent", action="store_true", help="本人授權的 AI 工具代開收錄（不需終端機；先跟本人說一聲）")
-    ask.add_argument("--owner-words", default="", help="--by-agent 時：本人說要開收錄的那句原話（人格代答不算）")
     args = parser.parse_args(argv)
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
@@ -376,8 +292,6 @@ def main(argv: list[str] | None = None) -> int:
             return install(args.site)
         if args.command == "uninstall":
             return uninstall()
-        if args.command == "consent":
-            return set_consent(args.answer, args.by_agent, args.owner_words)
         if args.command == "status":
             return status()
         return set_switch(args.command == "on", args.project)

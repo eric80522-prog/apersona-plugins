@@ -8,10 +8,4 @@ Log the owner in once on this machine. Only the system's `python3` is needed; no
 2. The command ends by itself once he has pressed 允許 (it prints 「登入好了」) or after 90 seconds. If it printed 「還在等你按允許」, wait for him to say he pressed it, then run the same command again; it goes on with the same code (a code lives ten minutes). If the code ran out or he pressed 拒絕, run it again for a new one.
 3. `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_login.py" status` says whether this machine is logged in. Never print or read the credentials file (`~/.apersona/plugin-credentials.json`) back to him.
 4. The login ends with a line that starts 「接通實測」: it asked the site for the 開場包 once with the new login. Tell him that line as printed. If it says 「沒過」, run the `status` command of step 3 and tell him what it says before going on.
-5. When it is done, tell him, in these words:
-   - 登入好了。下一個對話起，開場會帶你的代答授權、你的更正、你要 AI 怎麼跟你說話，與你的長期規矩；你推翻代答時打的那一句（只有那一句，秘密先遮）會存在網站，列進「學到的」等你按提取才算；其他記憶與判讀要用時我再叫 `recall`、`lookup` 拿。
-   - 開新對話時，開場包只拿不送你的字；需要記憶時我會自己叫 `recall`。不想要開場包就 `/apersona:off`。
-   - 收錄（把你親手打的字收進素材）預設關。要開有兩條路：你本人在自己的終端機執行下面這一行，看過同意書後親手打「我同意」；或你明說授權我，我就用 `--by-agent` 帶上你那句原話代你開（開之前我會先跟你說一聲會送出什麼）。代開會記成「由 AI 工具代開」、寄通知信給你，網站「裝置」頁可一鍵撤回：
-     `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apersona_hook.py" --consent yes`
-   - 要登出這台打 `/apersona:logout`；網站上按「登出這台」也會讓這台要重新 `/apersona:login`。
-   Run the `--consent yes` line with `--by-agent --owner-words "<his exact sentence>"` added only when he has told you, in this conversation, to turn 收錄 on for him, and only after you have told him what it will send: his own typed words (secrets masked), and in Claude Code the sentences around each `lookup` with the AI's reply as 決策前後文, to apersonaai.com, mailed to him and revocable on the 裝置 page. Print the consent text it shows him. `--owner-words` is his own sentence word for word (a 人格代答 reply does not count). Without that word from him, never run it; if the site says he took it back (`owner_revoked`), he must open it himself at his terminal.
+5. Tell him: 登入好了。下一個對話起會拿開場包。需要時我會用 `recall` 查你的原話，或用 `lookup` 查判讀。要登出這台打 `/apersona:logout`。

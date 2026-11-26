@@ -7,7 +7,7 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
 | | 連接器 | 外掛 |
 |---|---|---|
 | 是什麼 | 在 AI 助理加一個網址（MCP） | 裝進 Claude Code，除了 MCP 還有 hook 與指令 |
-| 能做什麼 | 助理需要時查你的記憶與預決策 | 同左，另有自動開場、查完記憶後確認收件，以及經你同意的對話收錄 |
+| 能做什麼 | 助理需要時查你的記憶與預決策 | 同左，另有自動開場、查完記憶後確認收件與手動送資料 |
 | 適用 | Claude.ai、ChatGPT、Claude Code | Claude Code（Codex 的裝法見外掛說明） |
 | 登入 | OAuth，按「允許」 | Claude Code 的 MCP 與 hook 共用 `/apersona:login` 裝置登入（0.2.3 起） |
 
@@ -35,7 +35,7 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
 第一行把這個庫登記為外掛來源（`apersona`），不安裝任何東西；第二行安裝其中的 `apersona` 外掛，裝了：
 
 - MCP 伺服器 `apersona`：本機 stdio 轉送到網站，與 hook 共用裝置登入，不另建 OAuth 授權。
-- Claude Code 的 hook 在開新對話時拿開場包、在助理呼叫 `recall` 後確認收件；你開啟收錄後，每輪結束時才收錄。助理需要相關記憶時會呼叫 `recall`。要先在 Claude Code 打一次 `/apersona:login`，到瀏覽器按「允許」；登入存在你這台的 `~/.apersona/plugin-credentials.json`，沒登入時 hook 不擋提問，MCP 會提示先登入。
+- Claude Code 的 hook 在開新對話時拿開場包、在助理呼叫 `recall` 後確認收件。助理需要相關記憶時會呼叫 `recall`。要先在 Claude Code 打一次 `/apersona:login`，到瀏覽器按「允許」；登入存在你這台的 `~/.apersona/plugin-credentials.json`，沒登入時 hook 不擋提問，MCP 會提示先登入。
 - `/apersona:login`、`/apersona:logout`、`/apersona:on`、`/apersona:off`、`/apersona:read` 指令（`read` 把你指定資料夾的原始檔送到網站，送前先問你、先在本機遮秘密）。
 
 裝完後打 `/apersona:login` 登入一次（人格由你授權的那個決定，不用填人格識別碼或金鑰）。詳細見 [plugin/README.md](plugin/README.md)。
@@ -45,7 +45,7 @@ Apersona（https://www.apersonaai.com）把你本人的經驗與取捨，用在�
     codex plugin marketplace add https://github.com/eric80522-prog/apersona-plugins.git
     codex plugin add apersona@apersona
 
-回桌面重新載入外掛，選 Apersona 執行 setup，由本人完成一次 OAuth。接著直接問正在做的事，skill 會取開場、查本人經驗並附來源回答。這個 Codex 包不需要 Python／Bash、不載入 Claude hooks、不另做裝置碼登入；沒有每輪自動提示或自動收錄。
+回桌面重新載入外掛，選 Apersona 執行 setup，由本人完成一次 OAuth。接著直接問正在做的事，skill 會取開場、查本人經驗並附來源回答。這個 Codex 包不需要 Python／Bash、不載入 Claude hooks、不另做裝置碼登入。
 
 已用 Codex 桌面附帶 CLI 在隔離設定驗安裝、啟用及 MCP 載入；真人 OAuth 與首次問題仍須實走。詳細見 [接入說明](plugin/README.md)。
 

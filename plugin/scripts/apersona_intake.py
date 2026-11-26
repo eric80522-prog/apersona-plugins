@@ -11,7 +11,7 @@ Standard library only, like the hooks: nothing of the product is installed on hi
                       itself, or more than `MAX_ASK_FILES` files, stops here first and asks him (`--large` once he has
                       said yes). The list is kept (`plan.json`) for `send`.
 - `--ai ask`          the same, for his AI conversation records on this machine instead of a folder, found in one go:
-                      Claude Code's main conversations (`apersona_stats.claude_conversations`) and the Codex
+                      Claude Code's main conversations (`claude_conversations`) and the Codex
                       sessions a person typed in (`~/.codex/sessions`, by the rollout's first line,
                       `apersona_hook.session_source`; `codex exec` and subagents are not sent), each as it is; an
                       `.apersonaignore` in either place is kept. Printed as how many and how large per tool, not file
@@ -152,15 +152,24 @@ def write_json(path: Path, value: object) -> None:
     os.replace(str(temporary), str(path))
 
 
+def claude_conversations() -> tuple[list[Path], int, list[tuple[str, str]]]:
+    """The main conversations Claude Code keeps on this machine, how many an `.apersonaignore` there (or the
+    always-excluded names) left out, and the folders (in full, why) left out whole because their rule file could not
+    be used; a subagent's file lives one folder deeper and is not one."""
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    walk = Walk(root, {".jsonl"})
+    unread = [(str(root if folder == "." else root / folder), why) for folder, why in walk.rules_unread]
+    return [root / relative for relative in walk.files if relative.count("/") == 1], walk.left_out, unread
+
+
 def ai_records() -> tuple[list[tuple[str, Path]], list[tuple[str, str]], int, list[tuple[str, str]]]:
     """His AI conversation records on this machine: (which tool, file) for each to send, (file, why) for each that is
     not, how many the ignore rules left out, and the folders (in full, why) left out whole because their rule file
     could not be used."""
     import apersona_codex  # beside this file: where Codex keeps its sessions
     import apersona_hook
-    import apersona_stats
 
-    claude, left_out, unread = apersona_stats.claude_conversations()
+    claude, left_out, unread = claude_conversations()
     found = [("Claude Code", path) for path in claude]
     held: list[tuple[str, str]] = []
     root = apersona_codex.codex_home() / "sessions"
