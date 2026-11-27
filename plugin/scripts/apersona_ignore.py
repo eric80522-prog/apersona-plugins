@@ -11,9 +11,11 @@ Three kinds, all decided on this machine from names only, before any file is ope
   and `**` as a whole path piece). A file deeper down overrides one above it, and within one folder
   `.apersonaignore` is read after `.gitignore`, so it has the last word. As in git, a path inside an ignored folder
   cannot be brought back. Rule files above the chosen folder are not looked at.
-- a rule file that is there but cannot be used (a shortcut, not a plain file, over the size limit, or unreadable) means
-  the rules of its folder are unknown, so that folder and everything below it is left out whole and named in
-  `Walk.rules_unread` with the reason, for the caller to tell the owner. A rule file that is not there is no rules.
+- a rule file that is there but cannot be used (a shortcut, not a plain file, over the size limit, unreadable, or a
+  line of it that cannot be read as a pattern) means the rules of its folder are unknown, so that folder and
+  everything below it is left out whole and named in `Walk.rules_unread` with the reason, for the caller to tell the
+  owner: a rule not understood may be the one that keeps a private file out, so it never counts as no rule. A folder
+  that cannot be listed is named there too, its files never seen. A rule file that is not there is no rules.
 
 No package is used: none is in the lockfile, and the rules fit in this file.
 """
@@ -44,6 +46,12 @@ class RuleProblem(Enum):
     NOT_A_FILE = "不是一般檔案"
     TOO_LARGE = f"超過 {MAX_RULE_BYTES // 1_000_000} MB 上限"
     UNREADABLE = "讀不到"
+    #: a line that is no pattern this reads (`[z-a]`): not skipped, since it may be the rule that keeps a file out
+    UNPARSABLE = "有一條看不懂"
+
+
+#: why a folder below the chosen one was left out unseen: it could not be listed (`Walk.rules_unread`)
+FOLDER_UNREAD = "資料夾本身讀不到"
 
 
 @dataclass(frozen=True)
@@ -121,7 +129,8 @@ def _piece(piece: str) -> str:
 
 
 def parse(text: str) -> list[Rule]:
-    "The rules in a rule file's text, in order; blank lines and comments are skipped."
+    """The rules in a rule file's text, in order; blank lines and comments are skipped. `re.error` for a line that
+    cannot be read as a pattern: the file's rules are then not known (`RuleProblem.UNPARSABLE`)."""
     rules: list[Rule] = []
     for raw in text.splitlines():
         line = raw.rstrip("\r")
@@ -145,11 +154,7 @@ def parse(text: str) -> list[Rule]:
         line = line.lstrip("/")
         if not line:
             continue
-        source = _translate(line)
-        try:
-            pattern = re.compile(("^" if anchored else "^(?:.*/)?") + source + "$", re.DOTALL)
-        except re.error:
-            continue  # a pattern that cannot be read matches nothing, as git skips what it cannot parse
+        pattern = re.compile(("^" if anchored else "^(?:.*/)?") + _translate(line) + "$", re.DOTALL)
         rules.append(Rule(pattern, negated, folders_only))
     return rules
 
@@ -173,13 +178,18 @@ def _load(folder: Path) -> tuple[list[Rule], RuleProblem | None]:
             continue  # no rule file: no rules, nothing is hidden
         except OSError:
             return [], RuleProblem.UNREADABLE
+        except re.error:
+            return [], RuleProblem.UNPARSABLE
     return rules, None
 
 
 def unread_sentence(rules_unread: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> str:
     "The sentence that tells the owner which folders were left out whole because their rule file could not be used."
-    named = "、".join(f"{'選的資料夾本身' if folder == '.' else folder}（規則檔{why}）" for folder, why in rules_unread)
-    return f"規則檔用不了，所以這些資料夾（含底下）整個不送：{named}。"
+    named = "、".join(
+        f"{'選的資料夾本身' if folder == '.' else folder}（{why if why == FOLDER_UNREAD else '規則檔' + why}）"
+        for folder, why in rules_unread
+    )
+    return f"規則檔用不了或資料夾讀不到，所以這些資料夾（含底下）整個不送：{named}。"
 
 
 def is_ignored(parts: tuple[str, ...], is_dir: bool, levels: list[tuple[tuple[str, ...], list[Rule]]]) -> bool:
@@ -201,7 +211,8 @@ class Walk:
     sorted order, of the kinds `suffixes` names, none hidden (a dot in front of any piece); `left_out` counts those
     kinds of files that the rules or the always-list kept out, folders left out counted file by file. `rules_unread`
     lists (folder from the chosen one, `.` for it, why) of each folder left out whole because its rule file is there
-    but unusable (`RuleProblem`); its files are in `left_out` too."""
+    but unusable (`RuleProblem`), its files in `left_out` too, or because it could not be listed (`FOLDER_UNREAD`),
+    its files never seen and so not counted."""
 
     def __init__(self, root: Path, suffixes: frozenset[str] | set[str]) -> None:
         self.root = root
@@ -224,6 +235,7 @@ class Walk:
         try:
             entries = sorted(os.scandir(folder), key=lambda e: e.name)
         except OSError:
+            self.rules_unread.append(("/".join(parts) or ".", FOLDER_UNREAD))
             return
         for entry in entries:
             if entry.name.startswith("."):
